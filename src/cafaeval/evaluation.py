@@ -1,4 +1,5 @@
 import os
+import time
 import numpy as np
 import pandas as pd
 import multiprocessing as mp
@@ -129,9 +130,11 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
     precision, recall, remaining uncertainty and misinformation.
     Toi is the list of terms (indexes) to be considered
     """
+    t0 = time.time()
     # Parallelization
     if n_cpu == 0:
         n_cpu = mp.cpu_count()
+    print(f"[compute_metrics] starting with {n_cpu} CPUs, {len(tau_arr)} thresholds")
 
     columns = ["n", "tp", "fp", "fn", "pr", "rc"]
     # filter out proteins with no annotations in Terms-Of-Interest (toi)
@@ -163,6 +166,7 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
         else:
             n_gt = (count_g * ic_arr[toi]).sum(axis=1)
 
+    t1 = time.time()
     if gt_exclude is None:
         arg_lists = [[tau_arr, g, p, toi, n_gt, ic_arr] for tau_arr in np.array_split(tau_arr, n_cpu)]
         with mp.Pool(processes=n_cpu) as pool:
@@ -172,7 +176,8 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
         with mp.Pool(processes=n_cpu) as pool:
             metrics = np.concatenate(pool.starmap(compute_confusion_matrix_exclude, arg_lists), axis=0)
 
-    print("Jobs on all CPUs completed.")
+    t2 = time.time()
+    print(f"[compute_metrics] completed in {t2-t1:.2f}s (total: {t2-t0:.2f}s)")
     return pd.DataFrame(metrics, columns=columns)
 
 
@@ -212,12 +217,16 @@ def normalize(metrics, ns, tau_arr, ne, normalization):
 
 
 def evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude=None, normalization='cafa', n_cpu=0, weighted_only=False):
-
+    t0 = time.time()
+    print(f"[evaluate_prediction] starting for {len(prediction)} namespace(s)")
+    
     dfs = []
     dfs_w = []
 
     # Unweighted metrics
     for ns in prediction:
+        t_ns = time.time()
+        print(f"[evaluate_prediction] processing namespace: {ns}")
         # number of proteins with positive annotations
         proteins_has_gt = gt[ns].matrix[:, ontologies[ns].toi].sum(1) > 0
         proteins_with_gt = np.where(proteins_has_gt)[0]
@@ -236,13 +245,17 @@ def evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude=None, no
         ne = np.full(len(tau_arr), num_annot_prots)
 
         if not weighted_only:
-            dfs.append(normalize(compute_metrics(
-                prediction[ns].matrix, gt[ns].matrix, tau_arr, ontologies[ns].toi, exclude, None, n_cpu),
-                                ns, tau_arr, ne, normalization))
+            t_metrics = time.time()
+            metrics_df = compute_metrics(
+                prediction[ns].matrix, gt[ns].matrix, tau_arr, ontologies[ns].toi, exclude, None, n_cpu)
+            t_norm = time.time()
+            dfs.append(normalize(metrics_df, ns, tau_arr, ne, normalization))
+            print(f"[evaluate_prediction] {ns} (unweighted): metrics={t_norm-t_metrics:.2f}s, normalize={time.time()-t_norm:.2f}s, total={time.time()-t_ns:.2f}s")
 
         # Weighted metrics
         if ontologies[ns].ia is not None:
-
+            t_w = time.time()
+            print(f"[evaluate_prediction] processing weighted metrics for {ns}")
             # number of proteins with positive annotations
             proteins_has_gt = gt[ns].matrix[:, ontologies[ns].toi_ia].sum(1) > 0
             num_annot_prots = (proteins_has_gt).sum()
@@ -260,64 +273,91 @@ def evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude=None, no
 
             ne = np.full(len(tau_arr), num_annot_prots)
 
-            dfs_w.append(normalize(compute_metrics(
-                prediction[ns].matrix, gt[ns].matrix, tau_arr, ontologies[ns].toi_ia, exclude, ontologies[ns].ia, n_cpu),
-                ns, tau_arr, ne, normalization))
+            t_metrics_w = time.time()
+            metrics_df_w = compute_metrics(
+                prediction[ns].matrix, gt[ns].matrix, tau_arr, ontologies[ns].toi_ia, exclude, ontologies[ns].ia, n_cpu)
+            t_norm_w = time.time()
+            dfs_w.append(normalize(metrics_df_w, ns, tau_arr, ne, normalization))
+            print(f"[evaluate_prediction] {ns} (weighted): metrics={t_norm_w-t_metrics_w:.2f}s, normalize={time.time()-t_norm_w:.2f}s, total={time.time()-t_w:.2f}s")
 
+    t_merge = time.time()
     dfs = pd.concat(dfs)
 
     # Merge weighted and unweighted dataframes
     if dfs_w:
         dfs_w = pd.concat(dfs_w)
         dfs = pd.merge(dfs, dfs_w, on=['ns', 'tau'], suffixes=('', '_w'))
-
+    
+    print(f"[evaluate_prediction] completed in {time.time()-t0:.2f}s (merge: {time.time()-t_merge:.2f}s)")
     return dfs
 
 
 def cafa_eval(obo_file, pred_dir, gt_file, ia=None, no_orphans=False, norm='cafa', prop='max',
               exclude=None, toi_file=None, max_terms=None, th_step=0.01, n_cpu=1, weighted_only=False):
+    t_total = time.time()
+    print(f"[cafa_eval] starting evaluation")
+    print(f"[cafa_eval] parameters: norm={norm}, prop={prop}, th_step={th_step}, n_cpu={n_cpu}, weighted_only={weighted_only}")
 
     # Tau array, used to compute metrics at different score thresholds
     tau_arr = np.arange(th_step, 1, th_step)
+    print(f"[cafa_eval] tau_arr: {len(tau_arr)} thresholds from {th_step} to {1-th_step}")
 
     # Parse the OBO file and creates a different graphs for each namespace
+    t_obo = time.time()
+    print(f"[cafa_eval] parsing OBO file: {obo_file}")
     ontologies = obo_parser(obo_file, ("is_a", "part_of"), ia, not no_orphans)
     if toi_file is not None:
+        print(f"[cafa_eval] updating TOI from: {toi_file}")
         ontologies = update_toi(ontologies, toi_file)
+    print(f"[cafa_eval] OBO parsing completed in {time.time()-t_obo:.2f}s, namespaces: {list(ontologies.keys())}")
 
     # Parse ground truth file
+    t_gt = time.time()
+    print(f"[cafa_eval] parsing ground truth file: {gt_file}")
     gt = gt_parser(gt_file, ontologies)
     if exclude is not None:
+        print(f"[cafa_eval] parsing exclude file: {exclude}")
         gt_exclude = gt_exclude_parser(exclude, gt, ontologies)
     else:
         gt_exclude = None
+    print(f"[cafa_eval] ground truth parsing completed in {time.time()-t_gt:.2f}s")
 
     # Set prediction files looking recursively in the prediction folder
+    t_pred_files = time.time()
     pred_folder = os.path.normpath(pred_dir) + "/"  # add the tailing "/"
     pred_files = []
     for root, dirs, files in os.walk(pred_folder):
         for file in files:
             pred_files.append(os.path.join(root, file))
     logging.debug("Prediction paths {}".format(pred_files))
+    print(f"[cafa_eval] found {len(pred_files)} prediction file(s) in {time.time()-t_pred_files:.2f}s")
 
     # Parse prediction files and perform evaluation
     dfs = []
-    for file_name in pred_files:
-        print(file_name)
+    for idx, file_name in enumerate(pred_files, 1):
+        t_file = time.time()
+        print(f"[cafa_eval] [{idx}/{len(pred_files)}] processing: {file_name}")
+        t_parse = time.time()
         prediction = pred_parser(file_name, ontologies, gt, prop, max_terms)
         if not prediction:
             logging.warning("Prediction: {}, not evaluated".format(file_name))
+            print(f"[cafa_eval] [{idx}/{len(pred_files)}] skipped (not evaluated)")
         else:
+            print(f"[cafa_eval] [{idx}/{len(pred_files)}] parsed in {time.time()-t_parse:.2f}s, namespaces: {list(prediction.keys())}")
+            t_eval = time.time()
             df_pred = evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude,
                                           normalization=norm, n_cpu=n_cpu, weighted_only=weighted_only)
             df_pred['filename'] = file_name.replace(pred_folder, '').replace('/', '_')
             dfs.append(df_pred)
+            print(f"[cafa_eval] [{idx}/{len(pred_files)}] evaluation completed in {time.time()-t_eval:.2f}s (total: {time.time()-t_file:.2f}s)")
             logging.info("Prediction: {}, evaluated".format(file_name))
 
     # Concatenate all dataframes and save them
+    t_final = time.time()
     df = None
     dfs_best = {}
     if dfs:
+        print(f"[cafa_eval] concatenating {len(dfs)} result dataframes")
         df = pd.concat(dfs)
 
         # Remove rows with no coverage
@@ -325,6 +365,7 @@ def cafa_eval(obo_file, pred_dir, gt_file, ia=None, no_orphans=False, norm='cafa
         df.set_index(['filename', 'ns', 'tau'], inplace=True)
 
         # Calculate the best index for each namespace and each evaluation metric
+        print(f"[cafa_eval] calculating best metrics")
         for metric, cols in [('f', ['rc', 'pr']), ('f_w', ['rc_w', 'pr_w']), ('s', ['ru', 'mi']), ('f_micro', ['rc_micro', 'pr_micro']), ('f_micro_w', ['rc_micro_w', 'pr_micro_w'])]:
             if metric in df.columns:
                 index_best = df.groupby(level=['filename', 'ns'])[metric].idxmax() if metric in ['f', 'f_w', 'f_micro', 'f_micro_w'] else df.groupby(['filename', 'ns'])[metric].idxmin()
@@ -334,9 +375,12 @@ def cafa_eval(obo_file, pred_dir, gt_file, ia=None, no_orphans=False, norm='cafa
                 else:
                     df_best['cov_max'] = df.reset_index('tau').loc[[ele[:-1] for ele in index_best]].groupby(level=['filename', 'ns'])['cov_w'].max()
                 dfs_best[metric] = df_best
+        print(f"[cafa_eval] final processing completed in {time.time()-t_final:.2f}s")
     else:
         logging.info("No predictions evaluated")
+        print(f"[cafa_eval] no predictions evaluated")
 
+    print(f"[cafa_eval] total evaluation time: {time.time()-t_total:.2f}s")
     return df, dfs_best
 
 
