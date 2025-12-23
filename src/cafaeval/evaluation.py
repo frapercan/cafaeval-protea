@@ -1,4 +1,5 @@
 import os
+
 import time
 import numpy as np
 import pandas as pd
@@ -7,7 +8,6 @@ from cafaeval.parser import obo_parser, gt_parser, pred_parser, gt_exclude_parse
 from cafaeval.tests import test_norm_metric, test_intersection
 import logging
 logging.getLogger(__name__).addHandler(logging.NullHandler())
-
 
 # Return a mask for all the predictions (matrix) >= tau
 def solidify_prediction(pred, tau):
@@ -119,9 +119,28 @@ def compute_confusion_matrix_exclude(tau_arr, g_perprotein, pred_matrix, toi_per
         metrics[i, 4] = precision.sum()  # Precision
         metrics[i, 5] = recall.sum()  # Recall
 
-    print("metrics calculated")
     return metrics
 
+_CM_G = None
+_CM_P = None
+_CM_TOI = None
+_CM_N_GT = None
+_CM_IC = None
+
+
+def _cm_init(g, p, toi, n_gt, ic_arr):
+    global _CM_G, _CM_P, _CM_TOI, _CM_N_GT, _CM_IC
+    _CM_G = g
+    _CM_P = p
+    _CM_TOI = toi
+    _CM_N_GT = n_gt
+    _CM_IC = ic_arr
+
+
+def _cm_worker(tau_chunk):
+    return compute_confusion_matrix(
+        tau_chunk, _CM_G, _CM_P, _CM_TOI, _CM_N_GT, _CM_IC
+    )
 
 def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None, n_cpu=0):
     """
@@ -168,11 +187,16 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
 
     t1 = time.time()
     if gt_exclude is None:
-        arg_lists = [[tau_arr, g, p, toi, n_gt, ic_arr] for tau_arr in np.array_split(tau_arr, n_cpu)]
-        with mp.Pool(processes=n_cpu) as pool:
-            metrics = np.concatenate(pool.starmap(compute_confusion_matrix, arg_lists), axis=0)
+        tau_chunks = np.array_split(tau_arr, n_cpu)
+        ctx = mp.get_context("fork")
+        with ctx.Pool(processes=n_cpu, initializer=_cm_init, initargs=(g, p, toi, n_gt, ic_arr)) as pool:
+            metrics = np.concatenate(pool.map(_cm_worker, tau_chunks), axis=0)
     else:
-        arg_lists = [[tau_arr, gt_perprotein, pred[gt_matrix[:,toi].sum(1)>0, :], toi_perprotein, n_gt, ic_arr] for tau_arr in np.array_split(tau_arr, n_cpu)]
+        arg_lists = [
+            [tau_arr, gt_perprotein, pred[gt_matrix[:, toi].sum(1) > 0, :],
+            toi_perprotein, n_gt, ic_arr]
+            for tau_arr in np.array_split(tau_arr, n_cpu)
+        ]
         with mp.Pool(processes=n_cpu) as pool:
             metrics = np.concatenate(pool.starmap(compute_confusion_matrix_exclude, arg_lists), axis=0)
 
@@ -214,7 +238,6 @@ def normalize(metrics, ns, tau_arr, ne, normalization):
     metrics['f_micro'] = compute_f(metrics['pr_micro'], metrics['rc_micro'])
 
     return metrics
-
 
 def evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude=None, normalization='cafa', n_cpu=0, weighted_only=False):
     t0 = time.time()
@@ -281,6 +304,16 @@ def evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude=None, no
             print(f"[evaluate_prediction] {ns} (weighted): metrics={t_norm_w-t_metrics_w:.2f}s, normalize={time.time()-t_norm_w:.2f}s, total={time.time()-t_w:.2f}s")
 
     t_merge = time.time()
+
+    if weighted_only:
+        dfs_w = pd.concat(dfs_w)
+        base_cols = ("ns", "tau")
+        metric_cols = [c for c in dfs_w.columns if c not in base_cols]
+        for c in metric_cols:
+            dfs_w[f"{c}_w"] = dfs_w[c]
+        
+        return dfs_w
+
     dfs = pd.concat(dfs)
 
     # Merge weighted and unweighted dataframes
@@ -336,9 +369,9 @@ def cafa_eval(obo_file, pred_dir, gt_file, ia=None, no_orphans=False, norm='cafa
     dfs = []
     for idx, file_name in enumerate(pred_files, 1):
         t_file = time.time()
-        print(f"[cafa_eval] [{idx}/{len(pred_files)}] processing: {file_name}")
+        print(f"[cafa_eval] [{idx}/{len(pred_files)}] parsing: {file_name}")
         t_parse = time.time()
-        prediction = pred_parser(file_name, ontologies, gt, prop, max_terms)
+        prediction = pred_parser(file_name, ontologies, gt, prop, max_terms, n_cpu)
         if not prediction:
             logging.warning("Prediction: {}, not evaluated".format(file_name))
             print(f"[cafa_eval] [{idx}/{len(pred_files)}] skipped (not evaluated)")
