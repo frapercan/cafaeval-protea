@@ -153,30 +153,159 @@ def propagate(matrix, ont, order, mode='max'):
     """
     if matrix.shape[0] == 0:
         raise Exception("Empty matrix")
+        
+    children_by_term = getattr(ont, "_children_by_term", None)
+    if children_by_term is None:
+        children_by_term = [
+            np.flatnonzero(ont.dag[:, i]) for i in range(ont.dag.shape[1])
+        ]
+        ont._children_by_term = children_by_term
 
-    deepest = np.where(np.sum(matrix[:, order], axis=0) > 0)[0][0]
-    if deepest.size == 0:
+    has_any = np.any(matrix[:, order] != 0, axis=0)
+    idx = np.flatnonzero(has_any)
+    if idx.size == 0:
         raise Exception("The matrix is empty")
+    deepest = int(idx[0])
 
     # Remove leaves
-    order_ = np.delete(order, [range(0, deepest)])
+    order_ = order[deepest:]
 
     for i in order_:
         # Get direct children
-        children = np.where(ont.dag[:, i] != 0)[0]
+        children = children_by_term[i]
         if children.size > 0:
             # Add current terms to children
-            cols = np.concatenate((children, [i]))
             if mode == 'max':
-                matrix[:, i] = matrix[:, cols].max(axis=1)
+                child_max = matrix[:, children].max(axis=1)
+                matrix[:, i] = np.maximum(matrix[:, i], child_max)
             elif mode == 'fill':
                 # Select only rows where the current term is 0
-                rows = np.where(matrix[:, i] == 0)[0]
+                rows = np.flatnonzero(matrix[:, i] == 0)
                 if rows.size:
-                    idx = np.ix_(rows, cols)
+                    idx = np.ix_(rows, children)
                     matrix[rows, i] = matrix[idx].max(axis=1)
     return
 
 
 
 
+def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
+              _shm_name=None, _shape=None, _dtype_str=None,
+              _row_start=None, _row_end=None, _deepest=None):
+    import multiprocessing as mp
+    from multiprocessing import shared_memory
+
+    work_threshold = 800_000_000
+
+    children_by_term = getattr(ont, "_children_by_term", None)
+    if children_by_term is None:
+        children_by_term = [
+            np.flatnonzero(ont.dag[:, term_id])
+            for term_id in range(ont.dag.shape[1])
+        ]
+        ont._children_by_term = children_by_term
+
+    if _shm_name is None:
+        if matrix is None:
+            raise TypeError("matrix must not be None")
+        if matrix.shape[0] == 0:
+            raise Exception("Empty matrix")
+
+        has_any = np.any(matrix[:, order] != 0, axis=0)
+        nonzero_idx = np.flatnonzero(has_any)
+        if nonzero_idx.size == 0:
+            raise Exception("The matrix is empty")
+        deepest = int(nonzero_idx[0])
+        order_ = order[deepest:]
+
+        n_proc = int(parallel) if parallel else 0
+        if n_proc > 1:
+            sum_children = int(sum(children_by_term[t].size for t in order_))
+            work = int(matrix.shape[0]) * sum_children
+            print(f"[PROPAGATE] work: {work}")
+            if work < work_threshold:
+                n_proc = 0
+
+        if n_proc <= 1:
+            print(f"[PROPAGATE] single process")
+            for term_id in order_:
+                children = children_by_term[term_id]
+                if children.size == 0:
+                    continue
+                if mode == "max":
+                    child_max = matrix[:, children].max(axis=1)
+                    matrix[:, term_id] = np.maximum(matrix[:, term_id], child_max)
+                elif mode == "fill":
+                    rows = np.flatnonzero(matrix[:, term_id] == 0)
+                    if rows.size:
+                        idx = np.ix_(rows, children)
+                        matrix[rows, term_id] = matrix[idx].max(axis=1)
+            return
+
+        shm = shared_memory.SharedMemory(create=True, size=matrix.nbytes)
+        shm_matrix = np.ndarray(matrix.shape, dtype=matrix.dtype, buffer=shm.buf)
+        shm_matrix[:] = matrix
+        print(f"[PROPAGATE] multiprocess")
+        try:
+            n_rows = int(matrix.shape[0])
+            chunk_rows = int(np.ceil(n_rows / n_proc))
+
+            print(f"[PROPAGATE] chunk_rows: {chunk_rows}")
+            ctx = mp.get_context("spawn")
+            procs = []
+            for row_start in range(0, n_rows, chunk_rows):
+                row_end = min(n_rows, row_start + chunk_rows)
+                proc = ctx.Process(
+                    target=propagate,
+                    args=(None, ont, order),
+                    kwargs={
+                        "mode": mode,
+                        "parallel": 0,
+                        "chunk_rows": chunk_rows,
+                        "_shm_name": shm.name,
+                        "_shape": matrix.shape,
+                        "_dtype_str": matrix.dtype.str,
+                        "_row_start": row_start,
+                        "_row_end": row_end,
+                        "_deepest": deepest,
+                    },
+                )
+                proc.start()
+                procs.append(proc)
+            for proc in procs:
+                proc.join()
+                if proc.exitcode != 0:
+                    raise RuntimeError("Worker failed")
+            matrix[:] = shm_matrix
+        finally:
+            shm.close()
+            shm.unlink()
+        return
+
+    shm = shared_memory.SharedMemory(name=_shm_name)
+    try:
+        full = np.ndarray(tuple(_shape), dtype=np.dtype(_dtype_str), buffer=shm.buf)
+        row_start = int(_row_start)
+        row_end = int(_row_end)
+        view = full[row_start:row_end]
+        if view.shape[0] == 0:
+            return
+
+        deepest = int(_deepest) if _deepest is not None else 0
+        order_ = order[deepest:]
+
+        for term_id in order_:
+            children = children_by_term[term_id]
+            if children.size == 0:
+                continue
+            if mode == "max":
+                child_max = view[:, children].max(axis=1)
+                view[:, term_id] = np.maximum(view[:, term_id], child_max)
+            elif mode == "fill":
+                rows = np.flatnonzero(view[:, term_id] == 0)
+                if rows.size:
+                    idx = np.ix_(rows, children)
+                    view[rows, term_id] = view[idx].max(axis=1)
+    finally:
+        shm.close()
+    return
