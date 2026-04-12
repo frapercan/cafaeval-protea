@@ -80,13 +80,14 @@ Dolgorukova's speedup work.
 
 This fork modifies the following parts of the upstream:
 
-| Area | Upstream module | Planned change | Validation |
-|---|---|---|---|
-| Parser | `src/cafaeval/parser.py` | Incremental non-zero counter; early filtering | bit-exact (A) |
-| Propagation | `src/cafaeval/graph.py` | Cached children lists; fill-mode restricted to zero rows; sparse rewrite with numba kernels | bit-exact in A, `rtol=1e-6` in B |
-| Metrics | `src/cafaeval/evaluation.py` | Weighted-only fast path when IA file is present; sparse metric computation | bit-exact in A |
-| Logging | (new) | Structured stdlib `logging` at module granularity — see *Logging* below | n/a |
-| Orchestrator | `src/cafaeval/__main__.py` | Thin reshuffling only; no semantic change | bit-exact |
+| Area | Upstream module | Change | Status | Validation |
+|---|---|---|---|---|
+| Parser | `src/cafaeval/parser.py` | (A) incremental non-zero counter, buffered reads, single dict lookup per term; (B3) PyArrow-backed vectorised parser with dictionary-encoded `pid`/`tid` and sort-based per-namespace group-max | done | bit-exact on real corpora |
+| Propagation | `src/cafaeval/graph.py` | (A) cached per-term children lists, fill-mode restricted to zero rows, shared-memory spawn worker; (B4) sparse push-up kernel with flat ancestor CSR and `np.maximum.reduceat` group-max over input non-zeros | done | bit-exact in A, `rtol=1e-6` in B |
+| NK/LK metric | `src/cafaeval/evaluation.py` | (A) weighted-only fast path, fork-pool `initializer` for threshold sweep; (B1) sparse confusion-matrix kernel via `np.bincount` scatter + right-to-left cumsum | done | bit-exact |
+| PK metric | `src/cafaeval/evaluation.py` | (A) fork-pool `initializer` pattern extended to the `gt_exclude` branch; (B2) sparse PK kernel with boolean-mask filter `(pred != 0) & toi_mask & ~excluded_mask` | done | `rtol=1e-6` in B (ULP reorder) |
+| Logging | (new) | Structured stdlib `logging` at module granularity — see *Logging* below | done | n/a |
+| Orchestrator | `src/cafaeval/__main__.py` | Thin reshuffling only; no semantic change | done | bit-exact |
 
 Detailed per-commit diff against the upstream is maintained in
 [`CHANGES.md`](CHANGES.md).
@@ -101,13 +102,63 @@ weighted Fmax, weighted Smin, precision-recall curves, optimal thresholds
 — into `bench/oracle/*.pkl`. The diff tests under `tests/diff/` reload
 that oracle and compare the fork's output:
 
-- **Phase A** (safe optimizations — parser, cached children, weighted-only,
-  zero-row propagation): `atol=0, rtol=0`. A single-bit divergence is a bug.
-- **Phase B** (sparse rewrite + numba kernels): `rtol=1e-6, atol=1e-9`.
-  Divergence at this level is attributed to float summation order.
+- **Phase A** (parser cherry-picks, cached children, weighted-only,
+  zero-row propagation, NK sparse kernel, sparse propagate): `atol=0,
+  rtol=0`. A single-bit divergence is a bug.
+- **Phase B** (sparse PK confusion matrix): `rtol=1e-6, atol=1e-9`. The
+  PK sparse kernel reorders per-protein inner sums, so a ULP-level
+  (`~4e-16`) divergence in `pr` is expected and tolerated.
+
+The active phase is controlled by the `CAFAEVAL_PARITY_PHASE` env var
+(`A` or `B`). The default flipped from `A` to `B` when the Phase B2 PK
+kernel landed. On a 4.45M-row real corpus the fork agrees with
+unmodified upstream to `2.1e-14` in PK and `1.9e-14` in NK, well inside
+the Phase B tolerance.
 
 No result from this fork is trusted until the relevant corpus passes its
 diff test.
+
+---
+
+## Performance
+
+End-to-end wall time on a 4.45M-row real CAFA prediction file
+(`cafa_eval(...)` from OBO load through metric assembly), measured on a
+single workstation. "Upstream" is unmodified
+[`claradepaolis/CAFA-evaluator-PK`](https://github.com/claradepaolis/CAFA-evaluator-PK)
+at commit `16a6a6d`.
+
+| Mode | Upstream (n_cpu=1) | Fork (n_cpu=1) | Upstream (n_cpu=4) | Fork (n_cpu=4) | Speedup |
+|---|---|---|---|---|---|
+| NK | 1.39 s | **0.45 s** | 1.45 s | **0.42 s** | 3.1× – 3.5× |
+| PK | 2.96 s | **0.65 s** | 2.61 s | **0.63 s** | 4.1× – 4.6× |
+
+Single-threaded fork beats upstream-at-4-cores for both modes. After the
+sparse kernels landed, confusion-matrix compute is `<15 ms` total,
+propagate is `~40 ms`, and the prediction parser is now the dominant
+term at `~400–500 ms` — hence the PyArrow rewrite (Phase B3).
+
+## Runtime knobs
+
+All optimizations are gated by environment variables so the legacy path
+is always available for A/B comparison or debugging.
+
+| Var | Default | Effect |
+|---|---|---|
+| `CAFAEVAL_SPARSE` | `1` | Sparse NK + PK confusion-matrix kernels and sparse push-up propagation. Set to `0` to fall back to the dense/pool path. |
+| `CAFAEVAL_FAST_PARSER` | `1` | PyArrow-backed vectorised `pred_parser`. Set to `0` to force the legacy per-line loop. Also falls back automatically when `max_terms` is set or the fast path raises. |
+| `CAFAEVAL_PARITY_PHASE` | `B` | Tolerance used by `tests/diff/test_oracle_parity.py` — `A` for bit-exact, `B` for `rtol=1e-6, atol=1e-9`. |
+
+## Install
+
+```bash
+pip install cafaeval-protea               # core install (numpy + pandas + matplotlib)
+pip install "cafaeval-protea[fast]"       # enables the PyArrow parser fast path
+```
+
+The hard dependency set is kept at `numpy + pandas + matplotlib`;
+`pyarrow>=12` is an optional `[fast]` extra. Without it, `pred_parser`
+automatically falls back to the legacy loop.
 
 ---
 
