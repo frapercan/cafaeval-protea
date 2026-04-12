@@ -4,12 +4,12 @@ message: >-
   (Piovesan et al., 2024) as the primary reference. This fork is a modified
   derivative work and is not a replacement for the upstream citation.
 type: software
-title: "cafaeval (PROTEA fork)"
+title: "cafaeval (speedup fork)"
 abstract: >-
   Modified fork of CAFA-evaluator-PK providing performance optimizations
-  for local iteration in the PROTEA thesis project. Scoring semantics
-  (Fmax, Smin, weighted variants, Partial-Knowledge evaluation) are
-  preserved and validated against the unmodified upstream.
+  for local iteration. Scoring semantics (Fmax, Smin, weighted variants,
+  Partial-Knowledge evaluation) are preserved and validated against the
+  unmodified upstream via a bit-exact parity harness.
 license: GPL-3.0-or-later
 repository-code: "https://github.com/claradepaolis/CAFA-evaluator-PK"
 url: "https://github.com/BioComputingUP/CAFA-evaluator"
@@ -57,3 +57,18 @@ references:
     notes: >-
       Direct parent of this fork. Adds Partial-Knowledge evaluation and
       terms-of-interest filtering to the upstream CAFA-evaluator.
+  - type: software
+    title: "CAFA-evaluator-PK-speedup"
+    authors:
+      - family-names: Dolgorukova
+        given-names: Antonina
+        alias: T0chka
+    repository-code: "https://github.com/T0chka/CAFA-evaluator-PK-speedup"
+    license: GPL-3.0-or-later
+    notes: >-
+      Source of the Phase A algorithmic speedups cherry-picked into this
+      fork (weighted-only fast path, cached children lists, fill-mode
+      restricted to zero rows, incremental parser counters, shared-memory
+      parallel propagation, fork-pool initializer pattern for the
+      threshold sweep). Shared in the CAFA 6 Kaggle discussion post #664359
+      "Speeding up cafaeval".

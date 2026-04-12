@@ -1,4 +1,4 @@
-# cafaeval (PROTEA fork)
+# cafaeval — speedup fork
 
 > **This is a modified fork.** See [`CHANGES.md`](CHANGES.md) for the full list
 > of modifications and their dates (required by GPLv3 §5.a).
@@ -9,15 +9,15 @@ Clara De Paolis, which is itself a fork of
 [**CAFA-evaluator**](https://github.com/BioComputingUP/CAFA-evaluator) by the
 BioComputing UP group at the University of Padua (Piovesan et al., 2024).
 
-The fork exists **only** to provide a faster local evaluator for iterative
-work in the PROTEA thesis project. All scoring semantics — Fmax, Smin,
-weighted variants, Partial-Knowledge (PK) evaluation, information accretion
-weighting — are preserved and validated against the upstream output before
-any new result is trusted.
+The fork exists to provide a faster local evaluator for iterative work. All
+scoring semantics — Fmax, Smin, weighted variants, Partial-Knowledge (PK)
+evaluation, information accretion weighting — are preserved and validated
+against the upstream output before any optimization lands.
 
-The installable package name remains `cafaeval` (identical import path) so
-that existing downstream code using `from cafaeval.evaluation import cafa_eval`
-keeps working unchanged.
+The Python import path remains `cafaeval` (identical API) so that existing
+downstream code using `from cafaeval.evaluation import cafa_eval` keeps
+working unchanged. The PyPI distribution name for this fork is deliberately
+left unset until publication.
 
 ---
 
@@ -45,17 +45,29 @@ The Partial-Knowledge evaluation extensions were contributed by
 This fork is branched directly from that repository and inherits its
 semantics for `-known` annotations and terms-of-interest filtering.
 
-### Speedup ideas
+### Speedup ideas and cherry-picked commits
 
-The algorithmic speedups implemented in this fork (sparse representation,
-numba kernels, weighted-only fast path, children-list caching, fill-mode
-restriction to zero rows, serialized ground-truth parsing) are adapted from
-ideas shared by **`<KAGGLE_AUTHOR_HANDLE>`** in the CAFA 6 Kaggle discussion
+The Phase A algorithmic speedups in this fork (weighted-only fast path,
+cached per-term children lists, fill-mode restricted to zero rows,
+incremental non-zero counter in the prediction parser, shared-memory
+parallel DAG propagation, fork-pool `initializer` pattern for the
+threshold sweep) come from
+**Antonina Dolgorukova (`T0chka`)** and her public fork
+[T0chka/CAFA-evaluator-PK-speedup](https://github.com/T0chka/CAFA-evaluator-PK-speedup),
+which she shared in the CAFA 6 Kaggle discussion
 [*"Speeding up cafaeval"*](https://www.kaggle.com/competitions/cafa-6-protein-function-prediction/discussion/664359)
-(post #664359). The implementation here is independent but the conceptual
-credit belongs to the original author. If you use the speedups in published
-work please acknowledge both the upstream paper above **and** the Kaggle
-discussion.
+(post #664359).
+
+The five substantive commits from her `speedup-local` branch were
+cherry-picked into this fork with authorship preserved (see `git log`).
+On top of that, we added: dead-code removal, structured `cafaeval.*`
+logging, extension of the fork-pool `initializer` pattern from the NK/LK
+branch to the PK (`gt_exclude`) branch of `compute_metrics`, and the
+parity harness under `bench/` and `tests/diff/`.
+
+If you use the speedups in published work please acknowledge the
+upstream paper above, Clara De Paolis' PK fork, **and** Antonina
+Dolgorukova's speedup work.
 
 ---
 
@@ -89,8 +101,8 @@ that oracle and compare the fork's output:
 - **Phase B** (sparse rewrite + numba kernels): `rtol=1e-6, atol=1e-9`.
   Divergence at this level is attributed to float summation order.
 
-No result from this fork is used in the PROTEA thesis until the relevant
-corpus passes its diff test.
+No result from this fork is trusted until the relevant corpus passes its
+diff test.
 
 ---
 

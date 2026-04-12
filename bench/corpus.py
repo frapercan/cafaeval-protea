@@ -7,8 +7,9 @@ filtering. Three tiered sizes are defined so the parity test can run in
 seconds on the tiny corpus during iteration and on the large corpus before
 committing a change.
 
-No external data source and no PROTEA database are required: the entire
-corpus is produced from a seeded ``random.Random`` instance.
+No external data source and no database are required: the entire corpus
+is produced from a seeded ``random.Random`` instance, so the test suite
+stays reproducible and trivially portable.
 """
 from __future__ import annotations
 
@@ -121,6 +122,9 @@ def _build_dag(spec: CorpusSpec, rng: random.Random, ns_idx: int) -> List[Tuple[
 def _write_obo(path: pathlib.Path, dags: Dict[str, List[Tuple[str, List[str]]]]) -> None:
     lines: List[str] = [
         "format-version: 1.2",
+        # NOTE: this string is embedded in the corpus OBO header and
+        # contributes to the fingerprint. Do not change it without
+        # re-freezing the oracle against unmodified upstream.
         "data-version: cafaeval-protea-synthetic/1.0",
         "ontology: go",
         "",
