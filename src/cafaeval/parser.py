@@ -147,15 +147,33 @@ def gt_parser(gt_file, ontologies):
     gts = {}
     for ns in ontologies:
         if gt_dict.get(ns):
-            matrix = np.zeros((len(gt_dict[ns]), ontologies[ns].idxs), dtype='bool')
+            ont = ontologies[ns]
+            matrix = np.zeros((len(gt_dict[ns]), ont.idxs), dtype='bool')
             ids = {}
+            # Collect the non-zero coordinates as we fill so propagate() can
+            # skip the dense ``np.nonzero`` scan (the bool GT matrix has a
+            # density around 1e-4 on real corpora, so scanning every cell
+            # dominates).
+            nnz_est = sum(len(v) for v in gt_dict[ns].values())
+            nz_rows = np.empty(nnz_est, dtype=np.int64)
+            nz_cols = np.empty(nnz_est, dtype=np.int64)
+            k = 0
+            terms_dict = ont.terms_dict
             for i, p_id in enumerate(gt_dict[ns]):
                 ids[p_id] = i
                 for term_id in gt_dict[ns][p_id]:
-                    matrix[i, ontologies[ns].terms_dict[term_id]['index']] = 1
+                    col = terms_dict[term_id]['index']
+                    matrix[i, col] = 1
+                    nz_rows[k] = i
+                    nz_cols[k] = col
+                    k += 1
+            nz_rows = nz_rows[:k]
+            nz_cols = nz_cols[:k]
+            nz_scores = np.ones(k, dtype=matrix.dtype)
             logger.debug("gt matrix {} {} ".format(ns, matrix))
 
-            propagate(matrix, ontologies[ns], ontologies[ns].order, mode='max')
+            propagate(matrix, ont, ont.order, mode='max',
+                      _triples=(nz_rows, nz_cols, nz_scores))
             logger.debug("gt matrix propagated {} {} ".format(ns, matrix))
             gts[ns] = GroundTruth(ids, matrix, ns)
             logger.info('Ground truth: {}, proteins {}, annotations {}, replaced alt. ids {}'.format(ns, len(ids),

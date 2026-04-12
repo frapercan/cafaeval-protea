@@ -236,7 +236,7 @@ def _ancestors_csr(ont):
     return indptr, indices
 
 
-def _propagate_sparse_pushup(matrix, ont, mode):
+def _propagate_sparse_pushup(matrix, ont, mode, triples=None):
     """Sparse alternative to ``_propagate_serial``.
 
     Scatters each input non-zero ``(row, col, score)`` into every ancestor of
@@ -247,6 +247,12 @@ def _propagate_sparse_pushup(matrix, ont, mode):
     the per-term dense sweep by 1-2 orders of magnitude because only
     predicted terms contribute work.
 
+    If ``triples`` is ``(nz_rows, nz_cols, nz_scores)`` the caller already
+    knows the input non-zero positions (e.g. the parser just scattered them
+    into ``matrix``) and we skip the dense ``np.nonzero`` scan. This is a
+    large win for ground-truth matrices where the non-zero density is
+    ~1e-4 and ``np.nonzero`` would otherwise touch every cell.
+
     For ``mode='fill'`` the update semantics are "only overwrite cells that
     were originally zero"; this is restored by snapshotting the input
     non-zero positions and writing their original values back at the end.
@@ -255,11 +261,16 @@ def _propagate_sparse_pushup(matrix, ont, mode):
     if n_prot == 0 or n_terms == 0:
         return
 
-    nz_rows, nz_cols = np.nonzero(matrix)
+    if triples is not None:
+        nz_rows, nz_cols, nz_scores = triples
+    else:
+        nz_rows, nz_cols = np.nonzero(matrix)
+        if nz_rows.size == 0:
+            return
+        nz_scores = matrix[nz_rows, nz_cols]
+
     if nz_rows.size == 0:
         return
-
-    nz_scores = matrix[nz_rows, nz_cols]
 
     indptr, anc_indices = _ancestors_csr(ont)
 
@@ -315,7 +326,7 @@ def _propagate_sparse_pushup(matrix, ont, mode):
 
 def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
               _shm_name=None, _shape=None, _dtype_str=None,
-              _row_start=None, _row_end=None, _deepest=None):
+              _row_start=None, _row_end=None, _deepest=None, _triples=None):
     """
     Update inplace the score matrix (proteins x terms) propagating scores up to
     the root. ``mode='max'`` takes the max of each term and its children;
@@ -335,22 +346,24 @@ def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
         if matrix.shape[0] == 0:
             raise Exception("Empty matrix")
 
+        use_sparse = os.environ.get("CAFAEVAL_SPARSE", "1") not in ("0", "false", "False")
+        if use_sparse:
+            _propagate_logger.debug(
+                "propagate sparse pushup",
+                extra={"mode": mode, "rows": int(matrix.shape[0])},
+            )
+            _propagate_sparse_pushup(matrix, ont, mode, triples=_triples)
+            return
+
+        # Dense fallback: compute ``deepest`` so the serial sweep can skip
+        # the all-zero columns at the front of ``order``. The sparse path
+        # does not need this because ``_ancestors_csr`` is order-independent.
         has_any = np.any(matrix[:, order] != 0, axis=0)
         nonzero_idx = np.flatnonzero(has_any)
         if nonzero_idx.size == 0:
             raise Exception("The matrix is empty")
         deepest = int(nonzero_idx[0])
         order_ = order[deepest:]
-
-        use_sparse = os.environ.get("CAFAEVAL_SPARSE", "1") not in ("0", "false", "False")
-        if use_sparse:
-            _propagate_logger.debug(
-                "propagate sparse pushup",
-                extra={"mode": mode, "rows": int(matrix.shape[0]),
-                       "terms": int(len(order_))},
-            )
-            _propagate_sparse_pushup(matrix, ont, mode)
-            return
 
         # Dense fallback path still needs the per-term children list.
         children_by_term = _children_cache(ont)

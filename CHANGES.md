@@ -223,7 +223,58 @@ Benchmark on the 4.45M-row real corpus:
   NK  legacy 1.22s → fast 0.45s  (2.72×)
   PK  legacy 1.44s → fast 0.63s  (2.28×)
 
+## 2026-04-13 — Phase B6: skip dense scans in ground-truth propagation
+
+Profiling `gt_parser` on the real PROTEA corpus
+(`74462707-af77-46a2-8152-a8e0d65d9a5d`) revealed two dense
+full-matrix scans hiding on the sparse path:
+
+1. `graph.propagate` was still running `has_any = np.any(matrix[:, order]
+   != 0, axis=0)` and a `flatnonzero` at the top of the function to
+   compute the ``deepest`` slice offset. That value is only consumed by
+   the **dense** fallback (``_propagate_serial`` slices ``order`` with
+   it); the sparse push-up kernel is order-independent because it walks
+   ancestors via the CSR cache. The scan costs ~150 ms per namespace on
+   a `(n_prot, n_terms)` bool matrix and runs three times per
+   `gt_parser` call, i.e. ~450 ms of pure overhead on the sparse path.
+2. `_propagate_sparse_pushup` rediscovered the input non-zeros via
+   `np.nonzero(matrix)` even when the caller had just scattered them
+   explicitly. On the BP ontology (18 829 × 25 950 bool matrix with
+   ~27 k annotations) that is a scan of 488 M cells to find 1 per 18 000,
+   costing ~500 ms per `gt_parser` invocation.
+
+- `graph.propagate`: the `has_any`/`flatnonzero`/`deepest` block is now
+  gated behind the dense fallback branch. The sparse path just calls
+  `_propagate_sparse_pushup` directly with the original `matrix` and
+  never touches `order`.
+- `graph._propagate_sparse_pushup`: accepts an optional
+  ``triples=(nz_rows, nz_cols, nz_scores)`` argument; when provided the
+  kernel reuses those coordinates instead of calling `np.nonzero`. The
+  dense-fallback behaviour is unchanged.
+- `graph.propagate`: forwards an internal ``_triples`` kwarg into the
+  sparse kernel, parallel-safe (dense multiprocess branch is
+  untouched).
+- `parser.gt_parser`: collects the ``(row, col)`` non-zeros while it
+  fills the ground-truth matrix and passes them as ``_triples`` when
+  calling `propagate`. No API change.
+
+Isolated benchmark of `gt_parser` on the real PROTEA corpus
+(obo parse cost excluded):
+
+| Case | Before B6 | After B6 (cache cold) | After B6 (cache hot) |
+|---|---|---|---|
+| NK (7 k annotations) | 1.71 s | 1.46 s | 0.03 s |
+| PK (27 k annotations) | 2.21 s | 0.64 s | 0.16 s |
+
+The cold-cache cost is now dominated by the one-shot
+`_ancestors_csr` build (1.43 s for BP), which is paid once per
+`cafa_eval` call and then reused by the prediction propagation, so the
+net end-to-end saving is ~2 s per call (gt + gt_exclude combined).
+Parity: 6/6 on Phase B oracle gate.
+
 ### Planned (not yet applied)
 
+- Phase B5: optional numba kernel on the per-namespace parser
+  reduction to halve parser time again.
 - Optional: numba-JIT fallback for environments without pyarrow, if
   profiling on a legacy-only install warrants it.
