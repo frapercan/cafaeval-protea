@@ -172,7 +172,58 @@ upstream oracle on the `tiny`, `medium`, and `large` synthetic corpora.
   beats a 4-way fork pool of the dense kernel without any
   parallelism of its own.
 
+## 2026-04-13 — Phase B3: vectorised prediction-file parser
+
+Phase B profiling on the real 4.45M-row PK corpus showed that after
+B1/B2/B4 the sparse confusion matrix kernels had dropped to <15 ms
+total and ``propagate`` to ~42 ms, while ``pred_parser`` was still
+eating ~60% of wall time (1.0-1.4s) sitting inside the Python line
+loop — ``str.split``, ``dict.get``, ``str.strip`` took 4.7M calls
+each. A numba JIT on the scatter kernel (the original B3 plan) would
+have saved a few milliseconds on top of an already vectorised hot
+spot, so Phase B3 was redirected to rewriting ``pred_parser`` itself.
+
+- `parser._pred_parser_vectorised`: new PyArrow-backed bulk parser.
+  ``pyarrow.csv.read_csv`` ingests the whole prediction file at
+  native speed. ``pid`` and ``tid`` are dictionary-encoded once so
+  the Python-level ``ns_dict`` / ``gts[ns].ids`` / ``term_index``
+  lookups run over the (small) unique-value sets instead of over
+  every one of the 4.45M rows. The resulting numpy int code arrays
+  are filtered per namespace with vectorised comparisons. Per-namespace
+  reduction uses the same sort + ``np.maximum.reduceat`` group-max +
+  scatter pattern as the Phase B4 propagation kernel. Duplicate
+  ``(protein, term)`` predictions collapse to the max, matching the
+  legacy loop's "store the max if higher" semantics bit-exactly.
+- Alt-id expansion (rare on CAFA inputs) is flagged during the
+  per-unique-tid column lookup (column value ``-2``) and handled by
+  a short Python loop over just the affected rows, so the common
+  fast path never walks the full alt dictionary.
+- `parser._pred_parser_legacy`: the original per-line loop is
+  preserved and routed to for:
+    1. ``max_terms``-capped runs (the top-k cap is order-sensitive so
+       the vectorised path cannot reproduce it), and
+    2. any pathological input that makes the fast path raise (format
+       errors, missing columns). The caller clears any partial state
+       written by the fast path before falling back.
+- `parser.pred_parser`: gated by the new ``CAFAEVAL_FAST_PARSER`` env
+  var (default on). Set to ``0`` for A/B comparison against the
+  legacy loop.
+- `pyproject.toml`: declared ``pyarrow>=12`` as an optional
+  ``[fast]`` install extra. The package imports pyarrow lazily
+  inside the fast path only, so the hard dependency set stays at
+  ``numpy + pandas + matplotlib``.
+- Parity: 6/6 on Phase B oracle gate. On the 4.45M-row real corpus
+  the fast and legacy parsers agree **bit-exactly** (``max |Δ| = 0``)
+  for both NK and PK outputs — the vectorised reduction order
+  happens to match the legacy accumulation because every
+  ``(protein, term)`` pair's maximum is order-independent.
+
+Benchmark on the 4.45M-row real corpus:
+
+  NK  legacy 1.22s → fast 0.45s  (2.72×)
+  PK  legacy 1.44s → fast 0.63s  (2.28×)
+
 ### Planned (not yet applied)
 
-- B3 — numba JIT for the scatter + aggregation loop, if profiling
-  shows it is worth the optional build dependency.
+- Optional: numba-JIT fallback for environments without pyarrow, if
+  profiling on a legacy-only install warrants it.
