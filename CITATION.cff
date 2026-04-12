@@ -4,14 +4,18 @@ message: >-
   (Piovesan et al., 2024) as the primary reference. This fork is a modified
   derivative work and is not a replacement for the upstream citation.
 type: software
-title: "cafaeval (speedup fork)"
+title: "cafaeval-protea"
+authors:
+  - family-names: "Pérez Canales"
+    given-names: "Francisco Miguel"
+    email: "frapercan1@alum.us.es"
 abstract: >-
   Modified fork of CAFA-evaluator-PK providing performance optimizations
   for local iteration. Scoring semantics (Fmax, Smin, weighted variants,
   Partial-Knowledge evaluation) are preserved and validated against the
   unmodified upstream via a bit-exact parity harness.
 license: GPL-3.0-or-later
-repository-code: "https://github.com/claradepaolis/CAFA-evaluator-PK"
+repository-code: "https://github.com/frapercan/cafaeval-protea"
 url: "https://github.com/BioComputingUP/CAFA-evaluator"
 
 preferred-citation:

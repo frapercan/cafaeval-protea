@@ -1,23 +1,28 @@
-# cafaeval — speedup fork
+# cafaeval-protea
 
 > **This is a modified fork.** See [`CHANGES.md`](CHANGES.md) for the full list
 > of modifications and their dates (required by GPLv3 §5.a).
 
-This repository is a fork of
+`cafaeval-protea` is a fork of
 [**CAFA-evaluator-PK**](https://github.com/claradepaolis/CAFA-evaluator-PK) by
 Clara De Paolis, which is itself a fork of
 [**CAFA-evaluator**](https://github.com/BioComputingUP/CAFA-evaluator) by the
 BioComputing UP group at the University of Padua (Piovesan et al., 2024).
 
-The fork exists to provide a faster local evaluator for iterative work. All
-scoring semantics — Fmax, Smin, weighted variants, Partial-Knowledge (PK)
-evaluation, information accretion weighting — are preserved and validated
-against the upstream output before any optimization lands.
+The fork exists to provide a faster evaluator for iterative work, without
+changing any scoring semantics. Fmax, Smin, weighted variants,
+Partial-Knowledge (PK) evaluation and information accretion weighting are
+all preserved and validated against the upstream output before any
+optimization lands.
 
 The Python import path remains `cafaeval` (identical API) so that existing
 downstream code using `from cafaeval.evaluation import cafa_eval` keeps
-working unchanged. The PyPI distribution name for this fork is deliberately
-left unset until publication.
+working unchanged. Only the PyPI **distribution** name differs:
+
+```bash
+pip install cafaeval-protea          # installs the fork
+python -c "from cafaeval.evaluation import cafa_eval"  # same import
+```
 
 ---
 

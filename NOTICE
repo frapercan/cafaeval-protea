@@ -1,10 +1,10 @@
-cafaeval — speedup fork
-=======================
+cafaeval-protea
+===============
 
 This work is a modified fork of CAFA-evaluator-PK, which is itself a fork
 of the original CAFA-evaluator. The full attribution chain is:
 
-    cafaeval (this fork)
+    cafaeval-protea (this fork)
         └── CAFA-evaluator-PK (Clara De Paolis)
                 └── CAFA-evaluator (BioComputing UP, University of Padua)
 

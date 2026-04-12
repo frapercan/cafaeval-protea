@@ -3,34 +3,51 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cafaeval"
-version = "1.2.1"
+name = "cafaeval-protea"
+version = "1.2.1.post1"
 authors = [
-    {name = 'Damiano Piovesan', email = 'damiano.piovesan@unipd.it'},
-    {name = 'Parnal Joshi', email = 'parnal@iastate.edu'}
+    {name = "Francisco Miguel Pérez Canales", email = "frapercan1@alum.us.es"},
 ]
-description = 'CAFA evaluator code'
-readme = {file = 'README.md', 'content-type' = 'text/markdown'}
-#url='https://github.com/BioComputingUP/CAFA-evaluator'
-requires-python = '>=3.6'
-keywords = ['CAFA', 'structured data', 'ontology', 'Gene Ontology', 'protein function']
-license = {file = 'LICENCE.md', 'content-type' = 'text/markdown'}
-classifiers=[
-    'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
-    'Programming Language :: Python :: 3',
-    'Operating System :: OS Independent',
+maintainers = [
+    {name = "Francisco Miguel Pérez Canales", email = "frapercan1@alum.us.es"},
+]
+description = "Speedup fork of cafaeval (CAFA-evaluator-PK) with a bit-exact parity harness"
+readme = {file = "README.md", "content-type" = "text/markdown"}
+requires-python = ">=3.9"
+keywords = [
+    "CAFA",
+    "Gene Ontology",
+    "protein function prediction",
+    "Fmax",
+    "Smin",
+    "information accretion",
+    "ontology",
+]
+license = {file = "LICENCE.md", "content-type" = "text/markdown"}
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Intended Audience :: Science/Research",
 ]
 dependencies = [
-    'pandas',
-    'matplotlib',
-    'numpy',
+    "pandas",
+    "matplotlib",
+    "numpy",
 ]
 
 [project.urls]
-Homepage = "https://github.com/BioComputingUP/CAFA-evaluator"
-Repository = "https://github.com/BioComputingUP/CAFA-evaluator"
-Changelog = "https://github.com/BioComputingUP/CAFA-evaluator/blob/main/CHANGELOG.md"
-Wiki = "https://github.com/BioComputingUP/CAFA-evaluator/wiki"
+Homepage = "https://github.com/frapercan/cafaeval-protea"
+Repository = "https://github.com/frapercan/cafaeval-protea"
+Changelog = "https://github.com/frapercan/cafaeval-protea/blob/fork/CHANGES.md"
+Upstream = "https://github.com/BioComputingUP/CAFA-evaluator"
+"Direct parent (PK)" = "https://github.com/claradepaolis/CAFA-evaluator-PK"
+"Speedup source (T0chka)" = "https://github.com/T0chka/CAFA-evaluator-PK-speedup"
 
 [tool.setuptools.packages.find]
 where = ["src"]
