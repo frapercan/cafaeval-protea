@@ -57,3 +57,18 @@ references:
     notes: >-
       Direct parent of this fork. Adds Partial-Knowledge evaluation and
       terms-of-interest filtering to the upstream CAFA-evaluator.
+  - type: software
+    title: "CAFA-evaluator-PK-speedup"
+    authors:
+      - family-names: Dolgorukova
+        given-names: Antonina
+        alias: T0chka
+    repository-code: "https://github.com/T0chka/CAFA-evaluator-PK-speedup"
+    license: GPL-3.0-or-later
+    notes: >-
+      Source of the Phase A algorithmic speedups cherry-picked into this
+      fork (weighted-only fast path, cached children lists, fill-mode
+      restricted to zero rows, incremental parser counters, shared-memory
+      parallel propagation, fork-pool initializer pattern for the
+      threshold sweep). Shared in the CAFA 6 Kaggle discussion post #664359
+      "Speeding up cafaeval".

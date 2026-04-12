@@ -46,16 +46,25 @@ Per GPLv3 §5.a, all modifications are listed with their dates in CHANGES.md.
 Speedup ideas acknowledgement
 -----------------------------
 
-The algorithmic speedups (sparse representation, numba kernels, children
-caching, weighted-only fast path, fill-mode restriction to zero rows,
-ground-truth serialization) are adapted from the CAFA 6 Kaggle discussion:
+The Phase A algorithmic speedups (weighted-only fast path, cached
+per-term children lists, fill-mode restricted to zero rows, incremental
+non-zero counter in the prediction parser, shared-memory parallel DAG
+propagation, fork-pool initializer pattern for the threshold sweep) are
+taken from:
 
-    "Speeding up cafaeval"
-    Author: <KAGGLE_AUTHOR_HANDLE>
+    CAFA-evaluator-PK-speedup
+    Author: Antonina Dolgorukova (GitHub: T0chka)
+    https://github.com/T0chka/CAFA-evaluator-PK-speedup
+
+    Shared in the CAFA 6 Kaggle discussion "Speeding up cafaeval":
     https://www.kaggle.com/competitions/cafa-6-protein-function-prediction/discussion/664359
 
-The implementation in this fork is independent. The conceptual credit for
-these speedups belongs to the Kaggle author above.
+The five substantive commits from the upstream `speedup-local` branch
+were cherry-picked into this fork with git authorship preserved. The
+dead-code removal, the structured cafaeval.* logging, the extension of
+the fork-pool initializer pattern from the NK/LK branch to the PK
+(gt_exclude) branch of compute_metrics, and the parity harness under
+bench/ and tests/diff/ are additional work done on top of her commits.
 
 License
 -------

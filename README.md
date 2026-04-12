@@ -45,17 +45,29 @@ The Partial-Knowledge evaluation extensions were contributed by
 This fork is branched directly from that repository and inherits its
 semantics for `-known` annotations and terms-of-interest filtering.
 
-### Speedup ideas
+### Speedup ideas and cherry-picked commits
 
-The algorithmic speedups implemented in this fork (sparse representation,
-numba kernels, weighted-only fast path, children-list caching, fill-mode
-restriction to zero rows, serialized ground-truth parsing) are adapted from
-ideas shared by **`<KAGGLE_AUTHOR_HANDLE>`** in the CAFA 6 Kaggle discussion
+The Phase A algorithmic speedups in this fork (weighted-only fast path,
+cached per-term children lists, fill-mode restricted to zero rows,
+incremental non-zero counter in the prediction parser, shared-memory
+parallel DAG propagation, fork-pool `initializer` pattern for the
+threshold sweep) come from
+**Antonina Dolgorukova (`T0chka`)** and her public fork
+[T0chka/CAFA-evaluator-PK-speedup](https://github.com/T0chka/CAFA-evaluator-PK-speedup),
+which she shared in the CAFA 6 Kaggle discussion
 [*"Speeding up cafaeval"*](https://www.kaggle.com/competitions/cafa-6-protein-function-prediction/discussion/664359)
-(post #664359). The implementation here is independent but the conceptual
-credit belongs to the original author. If you use the speedups in published
-work please acknowledge both the upstream paper above **and** the Kaggle
-discussion.
+(post #664359).
+
+The five substantive commits from her `speedup-local` branch were
+cherry-picked into this fork with authorship preserved (see `git log`).
+On top of that, we added: dead-code removal, structured `cafaeval.*`
+logging, extension of the fork-pool `initializer` pattern from the NK/LK
+branch to the PK (`gt_exclude`) branch of `compute_metrics`, and the
+parity harness under `bench/` and `tests/diff/`.
+
+If you use the speedups in published work please acknowledge the
+upstream paper above, Clara De Paolis' PK fork, **and** Antonina
+Dolgorukova's speedup work.
 
 ---
 
