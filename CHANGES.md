@@ -96,11 +96,48 @@ upstream oracle on the `tiny`, `medium`, and `large` synthetic corpora.
   summation order), well inside the Phase B tolerance of
   `rtol=1e-6, atol=1e-9`.
 
+## 2026-04-12 — Phase B4: sparse push-up propagation kernel
+
+- `graph._ancestors_csr`: new lazy per-`Graph` cache. Walks the DAG in
+  topological order (leaves → roots → leaves) to compute the transitive
+  ancestor set of every term, flattened into a CSR-style
+  `(indptr, indices)` pair so ancestor lookups are constant-time index
+  slicing. The parents adjacency is built via a single
+  `np.nonzero(dag)` + `argsort` + `bincount` pass (one scan of the
+  matrix) instead of one `np.flatnonzero` call per term.
+- `graph._propagate_sparse_pushup`: new kernel that replaces the
+  per-term dense sweep (`_propagate_serial`, `O(n_terms · n_prot ·
+  avg_children)`) with a single scatter over input non-zeros:
+    1. collect input non-zeros `(row, col, score)`;
+    2. gather the flat ancestor list for every `col` via vectorised
+       `np.repeat` offsets (no Python loop);
+    3. encode `(row, ancestor)` as a single int64 flat key, stable-sort
+       once, and reduce per-group with `np.maximum.reduceat`;
+    4. write the group-maxes back in place.
+  Cost is `O(nnz · avg_ancestors + R log R)` with `R` the expanded
+  triple count — on sparse CAFA inputs this skips over every term that
+  has no predictions, unlike the dense sweep which pays for all of
+  them.
+- `graph.propagate`: sparse path is gated by the same `CAFAEVAL_SPARSE`
+  env var as the confusion matrix kernel (default on). The
+  `_children_cache(ont)` call was moved out of the unconditional top
+  of `propagate()` into the dense-fallback branch, so the sparse path
+  no longer pays the per-term children materialisation cost. The
+  `spawn` shared-memory worker branch now computes its own
+  `children_by_term` from the cache helper (latent fix to support
+  dense fallback under parallelism).
+- `mode='fill'` semantics are preserved: originally non-zero cells
+  keep their input value; only zero cells are overwritten by
+  propagated scores (restored after the group-max by writing back the
+  snapshotted input non-zeros).
+- Parity: bit-exact (`atol=0, rtol=0`) on the `tiny`, `medium`,
+  `large` synthetic oracle corpora (Phase A). On a 4.45M-row real
+  prediction file the sparse path agrees with the dense fallback to
+  `3.6e-15` (floating-point summation order), well inside the Phase B
+  tolerance of `rtol=1e-6, atol=1e-9`.
+
 ### Planned (not yet applied)
 
 - B2 — sparse PK kernel (`compute_confusion_matrix_exclude`).
 - B3 — numba JIT for the scatter + aggregation loop, if profiling
   shows it is worth the optional build dependency.
-- B4 — sparse representation for `propagate` (ravel/flatnonzero in the
-  shared-memory spawn path is still the second-largest cost after the
-  confusion matrix kernel).

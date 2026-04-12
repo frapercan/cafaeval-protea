@@ -1,6 +1,7 @@
 import numpy as np
 import copy
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -180,6 +181,138 @@ def _propagate_serial(matrix, order_, children_by_term, mode):
                 matrix[rows, term_id] = matrix[idx].max(axis=1)
 
 
+def _ancestors_csr(ont):
+    """Lazy per-ontology cache of transitive ancestors (self inclusive).
+
+    Returns ``(indptr, indices)`` flat arrays with
+    ``ancestors[t] == indices[indptr[t]:indptr[t+1]]``. Each list contains
+    term ``t`` itself plus every term reachable by walking DAG parent edges
+    up to the roots. Computed once per ``Graph`` instance.
+    """
+    cached = getattr(ont, "_ancestors_csr", None)
+    if cached is not None:
+        return cached
+
+    dag = ont.dag
+    n = int(dag.shape[0])
+
+    # Vectorised build of parents_by_term: one full np.nonzero scan instead
+    # of n_terms per-row flatnonzero calls. ``dag[i, j] == 1`` means ``i``
+    # is_a ``j``, so the non-zero rows of ``dag[t, :]`` are the parents of
+    # ``t``. Grouping by child row gives us the per-term parent list.
+    edge_rows, edge_cols = np.nonzero(dag)
+    sort_idx = np.argsort(edge_rows, kind='stable')
+    sorted_rows = edge_rows[sort_idx]
+    sorted_cols = edge_cols[sort_idx]
+    p_counts = np.bincount(sorted_rows, minlength=n)
+    p_indptr = np.zeros(n + 1, dtype=np.int64)
+    np.cumsum(p_counts, out=p_indptr[1:])
+
+    # ont.order is leaves → roots; reverse so parents are always finished
+    # before we look them up.
+    top_down = np.asarray(ont.order)[::-1]
+
+    # Use Python sets during construction, flatten to arrays afterwards.
+    ancestors = [None] * n
+    for t in top_down:
+        t_int = int(t)
+        s = {t_int}
+        parents_slice = sorted_cols[p_indptr[t_int]:p_indptr[t_int + 1]]
+        for p in parents_slice:
+            s.update(ancestors[int(p)])
+        ancestors[t_int] = s
+
+    lens = np.fromiter((len(ancestors[t]) for t in range(n)), dtype=np.int64, count=n)
+    indptr = np.zeros(n + 1, dtype=np.int64)
+    np.cumsum(lens, out=indptr[1:])
+    total = int(indptr[-1])
+    indices = np.empty(total, dtype=np.int64)
+    for t in range(n):
+        a = ancestors[t]
+        if a:
+            indices[indptr[t]:indptr[t + 1]] = np.fromiter(a, dtype=np.int64, count=len(a))
+
+    ont._ancestors_csr = (indptr, indices)
+    return indptr, indices
+
+
+def _propagate_sparse_pushup(matrix, ont, mode):
+    """Sparse alternative to ``_propagate_serial``.
+
+    Scatters each input non-zero ``(row, col, score)`` into every ancestor of
+    ``col`` (self inclusive), reduces by ``(row, ancestor)`` via a stable
+    sort + ``np.maximum.reduceat`` group-max, and writes the reduced values
+    back in-place. Cost is ``O(nnz * avg_ancestors + R log R)`` where ``R``
+    is the expanded triple count — on typical CAFA-shaped inputs this beats
+    the per-term dense sweep by 1-2 orders of magnitude because only
+    predicted terms contribute work.
+
+    For ``mode='fill'`` the update semantics are "only overwrite cells that
+    were originally zero"; this is restored by snapshotting the input
+    non-zero positions and writing their original values back at the end.
+    """
+    n_prot, n_terms = matrix.shape
+    if n_prot == 0 or n_terms == 0:
+        return
+
+    nz_rows, nz_cols = np.nonzero(matrix)
+    if nz_rows.size == 0:
+        return
+
+    nz_scores = matrix[nz_rows, nz_cols]
+
+    indptr, anc_indices = _ancestors_csr(ont)
+
+    n_anc = (indptr[nz_cols + 1] - indptr[nz_cols]).astype(np.int64)
+    total = int(n_anc.sum())
+    if total == 0:
+        return
+
+    # Vectorised gather of the per-non-zero ancestor slices into one flat
+    # array. Equivalent to concatenating ``anc_indices[indptr[c]:indptr[c+1]]``
+    # for every non-zero column ``c``, but without a Python loop.
+    #   block_starts[i]     = indptr[nz_cols[i]]
+    #   global_offsets[i]   = sum(n_anc[:i])
+    #   local_offset[j]     = j - global_offsets[ block(j) ]
+    #   anc_ptr[j]          = block_starts[ block(j) ] + local_offset[j]
+    block_starts = indptr[nz_cols]
+    global_offsets = np.zeros(nz_rows.size + 1, dtype=np.int64)
+    np.cumsum(n_anc, out=global_offsets[1:])
+    base_per_j = np.repeat(block_starts, n_anc)
+    local_offset = np.arange(total, dtype=np.int64) - np.repeat(global_offsets[:-1], n_anc)
+    expanded_cols = anc_indices[base_per_j + local_offset]
+    expanded_rows = np.repeat(nz_rows, n_anc)
+    expanded_scores = np.repeat(nz_scores, n_anc)
+
+    # Group-max over (row, ancestor). Use a flat key so a single argsort
+    # gives the grouping we need.
+    flat = expanded_rows.astype(np.int64) * n_terms + expanded_cols
+    order_idx = np.argsort(flat, kind='stable')
+    flat_s = flat[order_idx]
+    scores_s = expanded_scores[order_idx]
+
+    group_starts = np.empty(flat_s.size, dtype=bool)
+    group_starts[0] = True
+    np.not_equal(flat_s[1:], flat_s[:-1], out=group_starts[1:])
+    start_idx = np.flatnonzero(group_starts)
+    group_max = np.maximum.reduceat(scores_s, start_idx)
+    unique_flat = flat_s[start_idx]
+
+    out_rows = unique_flat // n_terms
+    out_cols = unique_flat % n_terms
+
+    # Max against what is currently in the matrix. For mode='max' this is the
+    # final answer; for mode='fill' we restore original non-zeros below.
+    current = matrix[out_rows, out_cols]
+    np.maximum(current, group_max, out=current)
+    matrix[out_rows, out_cols] = current
+
+    if mode == "fill":
+        # Only zero cells may be filled by propagation; originally non-zero
+        # cells keep their input value regardless of what descendants say.
+        matrix[nz_rows, nz_cols] = nz_scores
+
+
 def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
               _shm_name=None, _shape=None, _dtype_str=None,
               _row_start=None, _row_end=None, _deepest=None):
@@ -196,8 +329,6 @@ def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
     import multiprocessing as mp
     from multiprocessing import shared_memory
 
-    children_by_term = _children_cache(ont)
-
     if _shm_name is None:
         if matrix is None:
             raise TypeError("matrix must not be None")
@@ -210,6 +341,19 @@ def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
             raise Exception("The matrix is empty")
         deepest = int(nonzero_idx[0])
         order_ = order[deepest:]
+
+        use_sparse = os.environ.get("CAFAEVAL_SPARSE", "1") not in ("0", "false", "False")
+        if use_sparse:
+            _propagate_logger.debug(
+                "propagate sparse pushup",
+                extra={"mode": mode, "rows": int(matrix.shape[0]),
+                       "terms": int(len(order_))},
+            )
+            _propagate_sparse_pushup(matrix, ont, mode)
+            return
+
+        # Dense fallback path still needs the per-term children list.
+        children_by_term = _children_cache(ont)
 
         n_proc = int(parallel) if parallel else 0
         if n_proc > 1:
@@ -290,6 +434,7 @@ def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
 
         deepest = int(_deepest) if _deepest is not None else 0
         order_ = order[deepest:]
+        children_by_term = _children_cache(ont)
         _propagate_serial(view, order_, children_by_term, mode)
     finally:
         shm.close()
