@@ -9,7 +9,11 @@ is tightened or relaxed depending on the phase:
   at this level is attributed to float summation order.
 
 The active tolerance is controlled via the ``CAFAEVAL_PARITY_PHASE``
-environment variable (``A`` or ``B``). Default is ``A``.
+environment variable (``A`` or ``B``). Default is ``B`` — from the Phase
+B2 sparse PK kernel onwards the fork reorders inner per-protein sums and
+can no longer match upstream bit-for-bit (observed ULP-level ``4.4e-16``
+divergence in ``pr``). Set the env var to ``A`` explicitly to re-run the
+bit-exact gate over the Phase A cherry-picks only.
 """
 from __future__ import annotations
 
@@ -19,7 +23,7 @@ import pickle
 import numpy as np
 import pandas as pd
 
-PHASE = os.environ.get("CAFAEVAL_PARITY_PHASE", "A").upper()
+PHASE = os.environ.get("CAFAEVAL_PARITY_PHASE", "B").upper()
 
 if PHASE == "A":
     ATOL = 0.0

@@ -136,8 +136,43 @@ upstream oracle on the `tiny`, `medium`, and `large` synthetic corpora.
   `3.6e-15` (floating-point summation order), well inside the Phase B
   tolerance of `rtol=1e-6, atol=1e-9`.
 
+## 2026-04-13 — Phase B2: sparse PK confusion matrix kernel
+
+- `evaluation.compute_confusion_matrix_exclude_sparse`: new kernel
+  that extends the Phase B1 scatter + right-to-left cumsum strategy
+  to the PK setting where each protein has its own valid column set.
+  Filter is expressed as two boolean ANDs over dense
+  ``(n_prot, n_terms)`` matrices:
+    1. ``toi_mask[None, :]`` — global terms of interest.
+    2. ``~excluded_mask`` — per-protein exclude set from
+       ``gt_exclude.matrix[proteins_with_gt, :]``.
+  The scatter then sees only surviving non-zeros, so the per-protein
+  Python list of toi arrays (``toi_perprotein``, ``gt_perprotein``)
+  is never materialised. Cost drops from
+  ``O(n_tau · Σ_p |toi_p|)`` to ``O(nnz_valid + n_prot · n_tau)``.
+- `compute_metrics` (PK branch): when ``CAFAEVAL_SPARSE=1`` (default)
+  the sparse kernel is called directly with ``pred_sub``,
+  ``gt_with_annots``, ``toi_mask``, ``excluded_mask`` and a
+  vectorised ``n_gt``. The dense fallback retains the exact
+  list-comprehension summation order used upstream so
+  ``test_norm_metric`` inside the dense kernel does not trip on ULP
+  noise on real corpora.
+- Parity is now **Phase B only** (``rtol=1e-6, atol=1e-9``). The PK
+  sparse kernel reorders the per-protein inner sums relative to the
+  dense kernel, so the bit-exact Phase A tolerance no longer holds:
+  on the oracle corpora we observed divergences of ``4.4e-16``
+  (single ULP) in ``pr``. On a 4.45M-row real PK corpus
+  (6 953 ground-truth rows, `pk_known_terms.tsv` exclude set) the
+  sparse and dense kernels agree to ``2.1e-14``, well inside the
+  Phase B tolerance. All 6 oracle parity tests pass under
+  ``CAFAEVAL_PARITY_PHASE=B``.
+- Benchmark on the same real PK corpus at n_cpu=1:
+  dense 2.73s → sparse 1.45s (1.88× speedup). At n_cpu=4 dense drops
+  to 1.94s while sparse stays at 1.45s — the sparse kernel already
+  beats a 4-way fork pool of the dense kernel without any
+  parallelism of its own.
+
 ### Planned (not yet applied)
 
-- B2 — sparse PK kernel (`compute_confusion_matrix_exclude`).
 - B3 — numba JIT for the scatter + aggregation loop, if profiling
   shows it is worth the optional build dependency.

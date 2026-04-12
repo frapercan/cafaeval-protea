@@ -219,6 +219,106 @@ def compute_confusion_matrix_sparse(tau_arr, g, pred_matrix, toi, n_gt, ic_arr=N
     return metrics
 
 
+def compute_confusion_matrix_exclude_sparse(
+    tau_arr, pred_sub, gt_sub, toi_mask, excluded_mask, n_gt, ic_arr=None
+):
+    """Sparse alternative to :func:`compute_confusion_matrix_exclude`.
+
+    Same single-pass scatter + right-to-left cumsum strategy as
+    :func:`compute_confusion_matrix_sparse`, extended to the PK setting where
+    the valid column set is protein-specific. A prediction at ``(row, col)``
+    contributes to protein ``row`` only if:
+
+    1. ``col`` belongs to the global toi (``toi_mask``), and
+    2. ``col`` is not in this protein's exclude set (``~excluded_mask``).
+
+    Because the filter is expressed as a boolean AND over dense matrices,
+    the sparse scatter sees only the surviving non-zeros — we never
+    materialise the Python list of per-protein toi arrays. Cost drops from
+    ``O(n_tau * sum_p |toi_p|)`` to ``O(nnz_valid + n_prot * n_tau)``.
+
+    Parameters
+    ----------
+    pred_sub:
+        ``(n_prot, n_terms)`` float — predictions restricted to proteins
+        with at least one GT annotation in the toi.
+    gt_sub:
+        ``(n_prot, n_terms)`` bool/int — ground truth for the same proteins.
+    toi_mask:
+        ``(n_terms,) bool`` — global terms-of-interest flag.
+    excluded_mask:
+        ``(n_prot, n_terms) bool`` — per-protein exclude flag.
+    n_gt:
+        ``(n_prot,) float`` — pre-computed weight of valid GT annotations
+        per protein (dense sum over ``gt_sub & toi_mask & ~excluded_mask``,
+        optionally multiplied by ``ic_arr``).
+    ic_arr:
+        ``(n_terms,) float`` or ``None`` — optional per-term weight.
+    """
+    n_prot, n_terms = pred_sub.shape
+    n_tau = len(tau_arr)
+    metrics = np.zeros((n_tau, 6), dtype='float')
+
+    total_gt = float(n_gt.sum())
+
+    # Only predictions at valid columns contribute. ``pred_sub != 0`` is the
+    # sparsity filter; the two mask ANDs apply the PK exclusion.
+    valid = (pred_sub != 0) & toi_mask[None, :] & (~excluded_mask)
+    nz_rows, nz_cols = np.nonzero(valid)
+    if nz_rows.size == 0:
+        metrics[:, 3] = total_gt
+        return metrics
+
+    nz_scores = pred_sub[nz_rows, nz_cols]
+    nz_is_tp = gt_sub[nz_rows, nz_cols].astype(np.float64, copy=False)
+
+    last_idx = np.searchsorted(tau_arr, nz_scores, side='right') - 1
+    if last_idx.min() < 0:
+        keep = last_idx >= 0
+        last_idx = last_idx[keep]
+        nz_rows = nz_rows[keep]
+        nz_cols = nz_cols[keep]
+        nz_is_tp = nz_is_tp[keep]
+        if last_idx.size == 0:
+            metrics[:, 3] = total_gt
+            return metrics
+
+    flat = nz_rows.astype(np.int64, copy=False) * n_tau + last_idx.astype(np.int64, copy=False)
+    length = n_prot * n_tau
+
+    if ic_arr is None:
+        w_pred = np.ones_like(nz_is_tp)
+    else:
+        w_pred = ic_arr[nz_cols].astype(np.float64, copy=False)
+    w_tp = w_pred * nz_is_tp
+
+    delta_pred_w = np.bincount(flat, weights=w_pred, minlength=length).reshape(n_prot, n_tau)
+    delta_tp_w = np.bincount(flat, weights=w_tp, minlength=length).reshape(n_prot, n_tau)
+
+    pred_at_tau = np.cumsum(delta_pred_w[:, ::-1], axis=1)[:, ::-1]
+    tp_at_tau = np.cumsum(delta_tp_w[:, ::-1], axis=1)[:, ::-1]
+
+    tp_totals = tp_at_tau.sum(axis=0)
+    pred_totals = pred_at_tau.sum(axis=0)
+
+    metrics[:, 0] = (pred_at_tau > 0).sum(axis=0)
+    metrics[:, 1] = tp_totals
+    metrics[:, 2] = pred_totals - tp_totals
+    metrics[:, 3] = total_gt - tp_totals
+
+    safe_pred = np.where(pred_at_tau > 0, pred_at_tau, 1.0)
+    precision = np.where(pred_at_tau > 0, tp_at_tau / safe_pred, 0.0)
+    metrics[:, 4] = precision.sum(axis=0)
+
+    if np.any(n_gt > 0):
+        n_gt_col = n_gt.astype(np.float64, copy=False)[:, None]
+        safe_gt = np.where(n_gt_col > 0, n_gt_col, 1.0)
+        recall = np.where(n_gt_col > 0, tp_at_tau / safe_gt, 0.0)
+        metrics[:, 5] = recall.sum(axis=0)
+
+    return metrics
+
+
 _CM_G = None
 _CM_P = None
 _CM_TOI = None
@@ -288,21 +388,51 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
     g = gt_with_annots[:, toi]
     p = pred[proteins_has_gt, :][:, toi]
 
+    use_sparse = os.environ.get("CAFAEVAL_SPARSE", "1") not in ("0", "false", "False")
+
+    toi_mask = None
+    excluded_mask = None
+    toi_perprotein = None
+    gt_perprotein = None
+
     if gt_exclude is not None:
-        toi_perprotein = [np.setdiff1d(toi, gt_exclude.matrix[prot, :].nonzero()[0],
-                                       assume_unique=True) for prot in
-                          proteins_with_gt]
-        gt_perprotein = [gt_with_annots[p_idx, tois] for p_idx, tois in enumerate(toi_perprotein)]
-        # The number of GT annotations per proteins will change to exclude the set from g_exclude
-        n_gt = np.array([gpp.sum().item() for gpp in gt_perprotein])  # number of terms annotated in each protein
+        if use_sparse:
+            # Dense boolean masks replace the per-protein Python list of toi
+            # arrays. Each protein's effective toi is the global toi minus
+            # the terms flagged in ``gt_exclude``; per-protein GT weight is
+            # the sum over that intersection.
+            n_terms = pred.shape[1]
+            toi_mask = np.zeros(n_terms, dtype=bool)
+            toi_mask[toi] = True
+            excluded_mask = gt_exclude.matrix[proteins_with_gt, :] != 0
+            valid_gt_mask = (gt_with_annots != 0) & toi_mask[None, :] & (~excluded_mask)
+            if ic_arr is None:
+                n_gt = valid_gt_mask.sum(axis=1).astype(np.float64)
+            else:
+                n_gt = (valid_gt_mask * ic_arr[None, :]).sum(axis=1).astype(np.float64)
+        else:
+            # Dense fallback: preserve the exact list-based summation order
+            # used by upstream so test_norm_metric inside the dense kernel
+            # does not trip on ULP noise.
+            toi_perprotein = [
+                np.setdiff1d(toi, gt_exclude.matrix[prot, :].nonzero()[0],
+                             assume_unique=True)
+                for prot in proteins_with_gt
+            ]
+            gt_perprotein = [
+                gt_with_annots[p_idx, tois]
+                for p_idx, tois in enumerate(toi_perprotein)
+            ]
+            n_gt = np.array([gpp.sum().item() for gpp in gt_perprotein])
+            if ic_arr is not None:
+                n_gt = np.array([(gpp * ic_arr[tois]).sum().item()
+                                 for gpp, tois in zip(gt_perprotein, toi_perprotein)])
         n_empty = int(np.count_nonzero(n_gt == 0))
         if n_empty:
             _metrics_logger.warning(
                 "proteins with no annotations in TOI",
                 extra={"count": n_empty},
             )
-        if ic_arr is not None:
-            n_gt = np.array([(gpp * ic_arr[tois]).sum().item() for gpp, tois in zip(gt_perprotein, toi_perprotein)])
     else:
         count_g = g
         # Simple metrics: number of terms annotated in each protein
@@ -313,7 +443,6 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
             n_gt = (count_g * ic_arr[toi]).sum(axis=1)
 
     t1 = time.time()
-    use_sparse = os.environ.get("CAFAEVAL_SPARSE", "1") not in ("0", "false", "False")
     if gt_exclude is None and use_sparse:
         # Sparse kernel: single-pass scatter + cumsum. No pool needed — the
         # kernel is fast enough that fork overhead would dominate.
@@ -324,9 +453,18 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
         with ctx.Pool(processes=n_cpu, initializer=_cm_init,
                       initargs=(g, p, toi, n_gt, ic_arr)) as pool:
             metrics = np.concatenate(pool.map(_cm_worker, tau_chunks), axis=0)
+    elif use_sparse:
+        # PK sparse kernel: boolean-masked single-pass scatter. The toi and
+        # exclude masks live as dense ``(n_prot, n_terms)`` bools, so the
+        # scatter never needs a Python-level per-protein loop.
+        pred_sub = pred[proteins_has_gt, :]
+        metrics = compute_confusion_matrix_exclude_sparse(
+            tau_arr, pred_sub, gt_with_annots, toi_mask, excluded_mask, n_gt, ic_arr
+        )
     else:
-        # PK branch still uses the dense per-protein kernel: ``toi`` varies
-        # per-protein, which doesn't map cleanly onto the flat scatter above.
+        # Dense fallback: fan out tau chunks over a fork pool using the
+        # per-protein toi / gt lists we prepared above. Gated by
+        # ``CAFAEVAL_SPARSE=0`` for A/B comparison against the sparse kernel.
         tau_chunks = np.array_split(tau_arr, n_cpu)
         pred_sub = pred[proteins_has_gt, :]
         ctx = mp.get_context("fork")
