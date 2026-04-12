@@ -1,0 +1,59 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite the original upstream publication
+  (Piovesan et al., 2024) as the primary reference. This fork is a modified
+  derivative work and is not a replacement for the upstream citation.
+type: software
+title: "cafaeval (PROTEA fork)"
+abstract: >-
+  Modified fork of CAFA-evaluator-PK providing performance optimizations
+  for local iteration in the PROTEA thesis project. Scoring semantics
+  (Fmax, Smin, weighted variants, Partial-Knowledge evaluation) are
+  preserved and validated against the unmodified upstream.
+license: GPL-3.0-or-later
+repository-code: "https://github.com/claradepaolis/CAFA-evaluator-PK"
+url: "https://github.com/BioComputingUP/CAFA-evaluator"
+
+preferred-citation:
+  type: article
+  title: >-
+    CAFA-evaluator: A Python Tool for Benchmarking Ontological
+    Classification Methods
+  authors:
+    - family-names: Piovesan
+      given-names: Damiano
+    - family-names: Zago
+      given-names: Davide
+    - family-names: Joshi
+      given-names: Parnal
+    - family-names: "De Paolis Kaluza"
+      given-names: "M. Clara"
+    - family-names: Mehdiabadi
+      given-names: Mahta
+    - family-names: Ramola
+      given-names: Rashika
+    - family-names: Monzon
+      given-names: "Alexander Miguel"
+    - family-names: Reade
+      given-names: Walter
+    - family-names: Friedberg
+      given-names: Iddo
+    - family-names: Radivojac
+      given-names: Predrag
+    - family-names: Tosatto
+      given-names: "Silvio C. E."
+  journal: "Bioinformatics Advances"
+  year: 2024
+  doi: "10.1093/bioadv/vbae043"
+
+references:
+  - type: software
+    title: "CAFA-evaluator-PK"
+    authors:
+      - family-names: "De Paolis"
+        given-names: Clara
+    repository-code: "https://github.com/claradepaolis/CAFA-evaluator-PK"
+    license: GPL-3.0-or-later
+    notes: >-
+      Direct parent of this fork. Adds Partial-Knowledge evaluation and
+      terms-of-interest filtering to the upstream CAFA-evaluator.

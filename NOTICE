@@ -1,0 +1,66 @@
+cafaeval — PROTEA fork
+======================
+
+This work is a modified fork of CAFA-evaluator-PK, which is itself a fork
+of the original CAFA-evaluator. The full attribution chain is:
+
+    cafaeval (this fork, PROTEA)
+        └── CAFA-evaluator-PK (Clara De Paolis)
+                └── CAFA-evaluator (BioComputing UP, University of Padua)
+
+Original upstream
+-----------------
+
+CAFA-evaluator
+    Copyright (C) 2022 Damiano Piovesan
+    https://github.com/BioComputingUP/CAFA-evaluator
+    Licensed under GNU General Public License v3.0 or later.
+
+    Piovesan D., Zago D., Joshi P., De Paolis Kaluza M. C., Mehdiabadi M.,
+    Ramola R., Monzon A. M., Reade W., Friedberg I., Radivojac P., Tosatto S. C. E.
+    "CAFA-evaluator: A Python Tool for Benchmarking Ontological Classification
+    Methods."  Bioinformatics Advances, 2024.
+    DOI: 10.1093/bioadv/vbae043
+
+Direct parent
+-------------
+
+CAFA-evaluator-PK
+    Clara De Paolis
+    https://github.com/claradepaolis/CAFA-evaluator-PK
+    Licensed under GNU General Public License v3.0 or later.
+
+    Adds Partial-Knowledge evaluation support (per-protein known-annotation
+    exclusion) and a terms-of-interest filter to the upstream evaluator.
+
+This fork
+---------
+
+This fork introduces performance optimizations for local iteration in the
+PROTEA project. Scoring semantics are preserved. No new entries are added
+to the set of returned metrics, and the Python API and CLI surfaces remain
+compatible with CAFA-evaluator-PK.
+
+Per GPLv3 §5.a, all modifications are listed with their dates in CHANGES.md.
+
+Speedup ideas acknowledgement
+-----------------------------
+
+The algorithmic speedups (sparse representation, numba kernels, children
+caching, weighted-only fast path, fill-mode restriction to zero rows,
+ground-truth serialization) are adapted from the CAFA 6 Kaggle discussion:
+
+    "Speeding up cafaeval"
+    Author: <KAGGLE_AUTHOR_HANDLE>
+    https://www.kaggle.com/competitions/cafa-6-protein-function-prediction/discussion/664359
+
+The implementation in this fork is independent. The conceptual credit for
+these speedups belongs to the Kaggle author above.
+
+License
+-------
+
+This fork is distributed under the terms of the GNU General Public License
+version 3, inherited from the upstream. The full license text is in
+LICENCE.md. Any derivative of this fork must also be distributed under
+GPLv3 or a compatible later version.

@@ -10,3 +10,15 @@ harmonic_mean.ipynb
 /dist/
 src/.ipynb_checkpoints
 
+# Fork additions
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+
+# Generated corpora are reproducible from bench/corpus.py; don't commit them.
+bench/corpora/
+
+# Oracle snapshots ARE committed (they are the parity ground truth).
+bench/oracle/*.tmp
+
