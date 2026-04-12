@@ -1,4 +1,4 @@
-# cafaeval (PROTEA fork)
+# cafaeval — speedup fork
 
 > **This is a modified fork.** See [`CHANGES.md`](CHANGES.md) for the full list
 > of modifications and their dates (required by GPLv3 §5.a).
@@ -9,15 +9,15 @@ Clara De Paolis, which is itself a fork of
 [**CAFA-evaluator**](https://github.com/BioComputingUP/CAFA-evaluator) by the
 BioComputing UP group at the University of Padua (Piovesan et al., 2024).
 
-The fork exists **only** to provide a faster local evaluator for iterative
-work in the PROTEA thesis project. All scoring semantics — Fmax, Smin,
-weighted variants, Partial-Knowledge (PK) evaluation, information accretion
-weighting — are preserved and validated against the upstream output before
-any new result is trusted.
+The fork exists to provide a faster local evaluator for iterative work. All
+scoring semantics — Fmax, Smin, weighted variants, Partial-Knowledge (PK)
+evaluation, information accretion weighting — are preserved and validated
+against the upstream output before any optimization lands.
 
-The installable package name remains `cafaeval` (identical import path) so
-that existing downstream code using `from cafaeval.evaluation import cafa_eval`
-keeps working unchanged.
+The Python import path remains `cafaeval` (identical API) so that existing
+downstream code using `from cafaeval.evaluation import cafa_eval` keeps
+working unchanged. The PyPI distribution name for this fork is deliberately
+left unset until publication.
 
 ---
 
@@ -101,8 +101,8 @@ that oracle and compare the fork's output:
 - **Phase B** (sparse rewrite + numba kernels): `rtol=1e-6, atol=1e-9`.
   Divergence at this level is attributed to float summation order.
 
-No result from this fork is used in the PROTEA thesis until the relevant
-corpus passes its diff test.
+No result from this fork is trusted until the relevant corpus passes its
+diff test.
 
 ---
 

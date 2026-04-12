@@ -1,10 +1,10 @@
-cafaeval — PROTEA fork
-======================
+cafaeval — speedup fork
+=======================
 
 This work is a modified fork of CAFA-evaluator-PK, which is itself a fork
 of the original CAFA-evaluator. The full attribution chain is:
 
-    cafaeval (this fork, PROTEA)
+    cafaeval (this fork)
         └── CAFA-evaluator-PK (Clara De Paolis)
                 └── CAFA-evaluator (BioComputing UP, University of Padua)
 
@@ -36,10 +36,10 @@ CAFA-evaluator-PK
 This fork
 ---------
 
-This fork introduces performance optimizations for local iteration in the
-PROTEA project. Scoring semantics are preserved. No new entries are added
-to the set of returned metrics, and the Python API and CLI surfaces remain
-compatible with CAFA-evaluator-PK.
+This fork introduces performance optimizations for local iteration.
+Scoring semantics are preserved. No new entries are added to the set of
+returned metrics, and the Python API and CLI surfaces remain compatible
+with CAFA-evaluator-PK.
 
 Per GPLv3 §5.a, all modifications are listed with their dates in CHANGES.md.
 
