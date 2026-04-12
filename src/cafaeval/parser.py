@@ -2,7 +2,11 @@ import time
 from cafaeval.graph import Graph, Prediction, GroundTruth, propagate
 import numpy as np
 import logging
-logging.getLogger(__name__).addHandler(logging.NullHandler())
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+_parser_logger = logging.getLogger("cafaeval.parser")
+_parser_logger.addHandler(logging.NullHandler())
 # import xml.etree.ElementTree as ET
 
 
@@ -148,12 +152,12 @@ def gt_parser(gt_file, ontologies):
                 ids[p_id] = i
                 for term_id in gt_dict[ns][p_id]:
                     matrix[i, ontologies[ns].terms_dict[term_id]['index']] = 1
-            logging.debug("gt matrix {} {} ".format(ns, matrix))
-            
+            logger.debug("gt matrix {} {} ".format(ns, matrix))
+
             propagate(matrix, ontologies[ns], ontologies[ns].order, mode='max')
-            logging.debug("gt matrix propagated {} {} ".format(ns, matrix))
+            logger.debug("gt matrix propagated {} {} ".format(ns, matrix))
             gts[ns] = GroundTruth(ids, matrix, ns)
-            logging.info('Ground truth: {}, proteins {}, annotations {}, replaced alt. ids {}'.format(ns, len(ids),
+            logger.info('Ground truth: {}, proteins {}, annotations {}, replaced alt. ids {}'.format(ns, len(ids),
                                                                                 np.count_nonzero(matrix), replaced.get(ns, 0)))
 
     return gts
@@ -229,27 +233,34 @@ def pred_parser(pred_file, ontologies, gts, prop_mode, max_terms=None, n_cpu=0):
                                 row_nnz[ns][i] += 1
 
     t1 = time.time()
-    print(f"[PRED_PARSER] prepared predictions in {t1-t0:.2f}s for {pred_file}")
+    _parser_logger.info(
+        "pred_parser prepared",
+        extra={"file": pred_file, "seconds": round(t1 - t0, 3)},
+    )
 
     predictions = {}
     tp0 = time.time()
     for ns in ids:
         if ids[ns]:
-            logging.debug("pred matrix {} {} ".format(ns, matrix))
-            t0 = time.time()
+            logger.debug("pred matrix {} {} ".format(ns, matrix))
+            t_ns = time.time()
             propagate(matrix[ns], ontologies[ns], ontologies[ns].order, mode=prop_mode, parallel=n_cpu)
-            t1 = time.time()
-            print(f"[PROPAGATE] {ns} time: {t1-t0:.2f}s")
-            logging.debug("pred matrix {} {} ".format(ns, matrix))
+            _parser_logger.info(
+                "pred_parser propagated namespace",
+                extra={"file": pred_file, "ns": ns,
+                       "seconds": round(time.time() - t_ns, 3)},
+            )
+            logger.debug("pred matrix {} {} ".format(ns, matrix))
             predictions[ns] = Prediction(ids[ns], matrix[ns], ns)
-            logging.info("Prediction: {}, {}, proteins {}, annotations {}, replaced alt. ids {}".format(pred_file, ns, len(ids[ns]),
+            logger.info("Prediction: {}, {}, proteins {}, annotations {}, replaced alt. ids {}".format(pred_file, ns, len(ids[ns]),
                                                                                 np.count_nonzero(matrix[ns]), replaced.get(ns, 0)))
-    tp1 = time.time()
-    print(f"[PRED_PARSER] propagated predictions in {tp1-tp0:.2f}s for {pred_file}")
+    _parser_logger.info(
+        "pred_parser propagated",
+        extra={"file": pred_file, "seconds": round(time.time() - tp0, 3)},
+    )
 
     if not predictions:
-        # raise Exception("Empty prediction, check format")
-        logging.warning("Empty prediction! Check format or overlap with ground truth")
+        logger.warning("Empty prediction! Check format or overlap with ground truth")
 
     return predictions
 

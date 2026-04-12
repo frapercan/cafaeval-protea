@@ -1,7 +1,11 @@
 import numpy as np
 import copy
 import logging
-logging.getLogger(__name__).addHandler(logging.NullHandler())
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+_propagate_logger = logging.getLogger("cafaeval.propagate")
+_propagate_logger.addHandler(logging.NullHandler())
 
 
 class Graph:
@@ -147,56 +151,10 @@ class GroundTruth:
         self.namespace = namespace
 
 
-def propagate(matrix, ont, order, mode='max'):
-    """
-    Update inplace the score matrix (proteins x terms) up to the root taking the max between children and parents
-    """
-    if matrix.shape[0] == 0:
-        raise Exception("Empty matrix")
-        
-    children_by_term = getattr(ont, "_children_by_term", None)
-    if children_by_term is None:
-        children_by_term = [
-            np.flatnonzero(ont.dag[:, i]) for i in range(ont.dag.shape[1])
-        ]
-        ont._children_by_term = children_by_term
-
-    has_any = np.any(matrix[:, order] != 0, axis=0)
-    idx = np.flatnonzero(has_any)
-    if idx.size == 0:
-        raise Exception("The matrix is empty")
-    deepest = int(idx[0])
-
-    # Remove leaves
-    order_ = order[deepest:]
-
-    for i in order_:
-        # Get direct children
-        children = children_by_term[i]
-        if children.size > 0:
-            # Add current terms to children
-            if mode == 'max':
-                child_max = matrix[:, children].max(axis=1)
-                matrix[:, i] = np.maximum(matrix[:, i], child_max)
-            elif mode == 'fill':
-                # Select only rows where the current term is 0
-                rows = np.flatnonzero(matrix[:, i] == 0)
-                if rows.size:
-                    idx = np.ix_(rows, children)
-                    matrix[rows, i] = matrix[idx].max(axis=1)
-    return
+_PROPAGATE_WORK_THRESHOLD = 800_000_000
 
 
-
-
-def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
-              _shm_name=None, _shape=None, _dtype_str=None,
-              _row_start=None, _row_end=None, _deepest=None):
-    import multiprocessing as mp
-    from multiprocessing import shared_memory
-
-    work_threshold = 800_000_000
-
+def _children_cache(ont):
     children_by_term = getattr(ont, "_children_by_term", None)
     if children_by_term is None:
         children_by_term = [
@@ -204,6 +162,41 @@ def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
             for term_id in range(ont.dag.shape[1])
         ]
         ont._children_by_term = children_by_term
+    return children_by_term
+
+
+def _propagate_serial(matrix, order_, children_by_term, mode):
+    for term_id in order_:
+        children = children_by_term[term_id]
+        if children.size == 0:
+            continue
+        if mode == "max":
+            child_max = matrix[:, children].max(axis=1)
+            matrix[:, term_id] = np.maximum(matrix[:, term_id], child_max)
+        elif mode == "fill":
+            rows = np.flatnonzero(matrix[:, term_id] == 0)
+            if rows.size:
+                idx = np.ix_(rows, children)
+                matrix[rows, term_id] = matrix[idx].max(axis=1)
+
+
+def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
+              _shm_name=None, _shape=None, _dtype_str=None,
+              _row_start=None, _row_end=None, _deepest=None):
+    """
+    Update inplace the score matrix (proteins x terms) propagating scores up to
+    the root. ``mode='max'`` takes the max of each term and its children;
+    ``mode='fill'`` only updates rows where the current term is zero.
+
+    When ``parallel > 1`` and the estimated work is above the threshold the
+    matrix is shared across processes via ``shared_memory`` (spawn context)
+    and rows are partitioned among workers. Recursive calls re-enter this
+    function through the ``_shm_name`` path.
+    """
+    import multiprocessing as mp
+    from multiprocessing import shared_memory
+
+    children_by_term = _children_cache(ont)
 
     if _shm_name is None:
         if matrix is None:
@@ -222,35 +215,39 @@ def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
         if n_proc > 1:
             sum_children = int(sum(children_by_term[t].size for t in order_))
             work = int(matrix.shape[0]) * sum_children
-            print(f"[PROPAGATE] work: {work}")
-            if work < work_threshold:
+            if work < _PROPAGATE_WORK_THRESHOLD:
+                _propagate_logger.info(
+                    "propagate serial (below threshold)",
+                    extra={"work": work, "threshold": _PROPAGATE_WORK_THRESHOLD,
+                           "n_proc_requested": n_proc, "mode": mode},
+                )
                 n_proc = 0
+            else:
+                _propagate_logger.info(
+                    "propagate parallel",
+                    extra={"work": work, "n_proc": n_proc, "mode": mode,
+                           "rows": int(matrix.shape[0])},
+                )
 
         if n_proc <= 1:
-            print(f"[PROPAGATE] single process")
-            for term_id in order_:
-                children = children_by_term[term_id]
-                if children.size == 0:
-                    continue
-                if mode == "max":
-                    child_max = matrix[:, children].max(axis=1)
-                    matrix[:, term_id] = np.maximum(matrix[:, term_id], child_max)
-                elif mode == "fill":
-                    rows = np.flatnonzero(matrix[:, term_id] == 0)
-                    if rows.size:
-                        idx = np.ix_(rows, children)
-                        matrix[rows, term_id] = matrix[idx].max(axis=1)
+            _propagate_logger.debug(
+                "propagate serial",
+                extra={"mode": mode, "rows": int(matrix.shape[0]),
+                       "terms": int(len(order_))},
+            )
+            _propagate_serial(matrix, order_, children_by_term, mode)
             return
 
         shm = shared_memory.SharedMemory(create=True, size=matrix.nbytes)
         shm_matrix = np.ndarray(matrix.shape, dtype=matrix.dtype, buffer=shm.buf)
         shm_matrix[:] = matrix
-        print(f"[PROPAGATE] multiprocess")
         try:
             n_rows = int(matrix.shape[0])
             chunk_rows = int(np.ceil(n_rows / n_proc))
-
-            print(f"[PROPAGATE] chunk_rows: {chunk_rows}")
+            _propagate_logger.debug(
+                "propagate chunking",
+                extra={"n_rows": n_rows, "chunk_rows": chunk_rows, "n_proc": n_proc},
+            )
             ctx = mp.get_context("spawn")
             procs = []
             for row_start in range(0, n_rows, chunk_rows):
@@ -293,19 +290,7 @@ def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
 
         deepest = int(_deepest) if _deepest is not None else 0
         order_ = order[deepest:]
-
-        for term_id in order_:
-            children = children_by_term[term_id]
-            if children.size == 0:
-                continue
-            if mode == "max":
-                child_max = view[:, children].max(axis=1)
-                view[:, term_id] = np.maximum(view[:, term_id], child_max)
-            elif mode == "fill":
-                rows = np.flatnonzero(view[:, term_id] == 0)
-                if rows.size:
-                    idx = np.ix_(rows, children)
-                    view[rows, term_id] = view[idx].max(axis=1)
+        _propagate_serial(view, order_, children_by_term, mode)
     finally:
         shm.close()
     return
