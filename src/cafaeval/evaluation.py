@@ -127,6 +127,98 @@ def compute_confusion_matrix_exclude(tau_arr, g_perprotein, pred_matrix, toi_per
 
     return metrics
 
+def compute_confusion_matrix_sparse(tau_arr, g, pred_matrix, toi, n_gt, ic_arr=None):
+    """Sparse alternative to :func:`compute_confusion_matrix`.
+
+    Scatters each non-zero prediction into the highest tau bin at which it is
+    still active, then recovers per-threshold per-protein sums via a single
+    right-to-left cumulative sum. Total cost is O(nnz + n_prot * n_tau)
+    instead of O(n_tau * n_prot * n_toi) for the dense scan, which is the
+    dominant win on real-world corpora where the prediction matrix is wide
+    and mostly zero above typical thresholds.
+
+    Accepts the same inputs as ``compute_confusion_matrix`` and returns a
+    ``(n_tau, 6)`` array with the same column order (n, tp, fp, fn, pr, rc).
+    ``tau_arr`` must be sorted in ascending order, which is already the case
+    for all call sites (``np.arange(th_step, 1, th_step)``).
+    """
+    n_prot, n_toi = pred_matrix.shape
+    n_tau = len(tau_arr)
+    metrics = np.zeros((n_tau, 6), dtype='float')
+
+    # Weight vector over the TOI columns. None → unweighted (all ones, cheap).
+    if ic_arr is None:
+        w_toi = None
+    else:
+        w_toi = ic_arr[toi].astype(np.float64, copy=False)
+
+    # Total gt weight (per protein) is already in n_gt for both modes;
+    # we only need its sum to fill the FN column.
+    total_gt = float(n_gt.sum())
+
+    nz_rows, nz_cols = np.nonzero(pred_matrix)
+    if nz_rows.size == 0:
+        metrics[:, 3] = total_gt
+        return metrics
+
+    nz_scores = pred_matrix[nz_rows, nz_cols]
+    nz_is_tp = g[nz_rows, nz_cols].astype(np.float64, copy=False)
+
+    # Highest tau index at which a pred with this score is still active.
+    # A pred is active at tau_arr[k] iff k <= last_idx.
+    last_idx = np.searchsorted(tau_arr, nz_scores, side='right') - 1
+    if last_idx.min() < 0:
+        keep = last_idx >= 0
+        last_idx = last_idx[keep]
+        nz_rows = nz_rows[keep]
+        nz_cols = nz_cols[keep]
+        nz_is_tp = nz_is_tp[keep]
+        if last_idx.size == 0:
+            metrics[:, 3] = total_gt
+            return metrics
+
+    # Flat scatter via bincount (much faster than np.add.at for large nnz).
+    flat = nz_rows.astype(np.int64, copy=False) * n_tau + last_idx.astype(np.int64, copy=False)
+    length = n_prot * n_tau
+
+    if w_toi is None:
+        w_pred = np.ones_like(nz_is_tp)
+    else:
+        w_pred = w_toi[nz_cols]
+    w_tp = w_pred * nz_is_tp
+
+    delta_pred_w = np.bincount(flat, weights=w_pred, minlength=length).reshape(n_prot, n_tau)
+    delta_tp_w = np.bincount(flat, weights=w_tp, minlength=length).reshape(n_prot, n_tau)
+
+    # Right-to-left cumulative sum: active weight at tau index k is the sum of
+    # contributions of all bins >= k (a pred dies out at the first k > last_idx).
+    pred_at_tau = np.cumsum(delta_pred_w[:, ::-1], axis=1)[:, ::-1]
+    tp_at_tau = np.cumsum(delta_tp_w[:, ::-1], axis=1)[:, ::-1]
+
+    # Per-threshold aggregation. Matches the column order of the dense kernel.
+    tp_totals = tp_at_tau.sum(axis=0)
+    pred_totals = pred_at_tau.sum(axis=0)
+
+    metrics[:, 0] = (pred_at_tau > 0).sum(axis=0)
+    metrics[:, 1] = tp_totals
+    metrics[:, 2] = pred_totals - tp_totals
+    metrics[:, 3] = total_gt - tp_totals
+
+    # Macro precision / recall. Guard divides by zero to match the dense kernel
+    # (which uses np.divide with where=denom > 0, returning 0 elsewhere).
+    safe_pred = np.where(pred_at_tau > 0, pred_at_tau, 1.0)
+    precision = np.where(pred_at_tau > 0, tp_at_tau / safe_pred, 0.0)
+    metrics[:, 4] = precision.sum(axis=0)
+
+    if np.any(n_gt > 0):
+        n_gt_col = n_gt.astype(np.float64, copy=False)[:, None]
+        safe_gt = np.where(n_gt_col > 0, n_gt_col, 1.0)
+        recall = np.where(n_gt_col > 0, tp_at_tau / safe_gt, 0.0)
+        metrics[:, 5] = recall.sum(axis=0)
+
+    return metrics
+
+
 _CM_G = None
 _CM_P = None
 _CM_TOI = None
@@ -221,14 +313,22 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
             n_gt = (count_g * ic_arr[toi]).sum(axis=1)
 
     t1 = time.time()
-    tau_chunks = np.array_split(tau_arr, n_cpu)
-    if gt_exclude is None:
+    use_sparse = os.environ.get("CAFAEVAL_SPARSE", "1") not in ("0", "false", "False")
+    if gt_exclude is None and use_sparse:
+        # Sparse kernel: single-pass scatter + cumsum. No pool needed — the
+        # kernel is fast enough that fork overhead would dominate.
+        metrics = compute_confusion_matrix_sparse(tau_arr, g, p, toi, n_gt, ic_arr)
+    elif gt_exclude is None:
+        tau_chunks = np.array_split(tau_arr, n_cpu)
         ctx = mp.get_context("fork")
         with ctx.Pool(processes=n_cpu, initializer=_cm_init,
                       initargs=(g, p, toi, n_gt, ic_arr)) as pool:
             metrics = np.concatenate(pool.map(_cm_worker, tau_chunks), axis=0)
     else:
-        pred_sub = pred[gt_matrix[:, toi].sum(1) > 0, :]
+        # PK branch still uses the dense per-protein kernel: ``toi`` varies
+        # per-protein, which doesn't map cleanly onto the flat scatter above.
+        tau_chunks = np.array_split(tau_arr, n_cpu)
+        pred_sub = pred[proteins_has_gt, :]
         ctx = mp.get_context("fork")
         with ctx.Pool(processes=n_cpu, initializer=_cme_init,
                       initargs=(gt_perprotein, pred_sub, toi_perprotein, n_gt, ic_arr)) as pool:

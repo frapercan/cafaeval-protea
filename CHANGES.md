@@ -71,15 +71,36 @@ upstream oracle on the `tiny`, `medium`, and `large` synthetic corpora.
   strings. No `print()` remains in the library.
 - Parity suite re-run after cleanup: still 6/6 bit-exact.
 
-## Planned (not yet applied)
+## 2026-04-12 — Phase B1: sparse NK/LK confusion matrix kernel
 
-### Phase B — sparse + numba rewrite
-Gate: every commit must pass `tests/diff/test_oracle_parity.py` with
-`rtol=1e-6, atol=1e-9` on all validation corpora.
+- `evaluation.compute_confusion_matrix_sparse`: new kernel that replaces
+  the per-threshold dense mask scan (`O(n_tau · n_prot · n_toi)`) with a
+  single scatter pass over non-zero predictions followed by one
+  right-to-left cumulative sum (`O(nnz + n_prot · n_tau)`). Each
+  prediction is bucketed into the highest tau index at which its score
+  is still active (`searchsorted(tau_arr, score, side='right') - 1`) via
+  `np.bincount` on the flattened `(row, bin)` index, which avoids the
+  Python-level hot loop of `np.add.at`.
+- `compute_metrics`: NK/LK branch now calls the sparse kernel directly
+  (no `multiprocessing.Pool` — the kernel is already faster than the
+  fork overhead of a Pool on real corpora). Gated by the
+  `CAFAEVAL_SPARSE` env var (default on; set to `0` to fall back to the
+  pooled dense path for A/B comparison or debugging).
+- The PK branch (`gt_exclude is not None`) keeps the dense
+  per-protein kernel — `toi_perprotein` varies per protein and doesn't
+  map cleanly onto a single flat scatter; sparsifying it is a separate
+  step.
+- Parity: bit-exact (`atol=0, rtol=0`) on the `tiny`, `medium`, `large`
+  synthetic oracle corpora. Against unmodified upstream on a 2.3M-row
+  real prediction file, max column divergence was 1.9e-14 (float
+  summation order), well inside the Phase B tolerance of
+  `rtol=1e-6, atol=1e-9`.
 
-- B1 — sparse representation keyed on predicted terms ∪ propagated GT,
-  replacing full ontology-sized dense matrices.
-- B2 — numba kernels for propagation and per-threshold metric aggregation.
-- B3 — `evaluation.compute_metrics` rewritten over the sparse layout.
-- B4 — removal of `multiprocessing.Pool` in favour of numba `prange`
-  parallelism (eliminates fork-related hangs observed in CI).
+### Planned (not yet applied)
+
+- B2 — sparse PK kernel (`compute_confusion_matrix_exclude`).
+- B3 — numba JIT for the scatter + aggregation loop, if profiling
+  shows it is worth the optional build dependency.
+- B4 — sparse representation for `propagate` (ravel/flatnonzero in the
+  shared-memory spawn path is still the second-largest cost after the
+  confusion matrix kernel).

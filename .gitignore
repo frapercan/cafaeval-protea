@@ -22,3 +22,6 @@ bench/corpora/
 # Oracle snapshots ARE committed (they are the parity ground truth).
 bench/oracle/*.tmp
 
+# Profile artifacts from bench/profile_real.py — reproducible, not committed.
+bench/*.prof
+
