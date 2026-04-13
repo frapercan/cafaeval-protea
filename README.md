@@ -122,21 +122,36 @@ diff test.
 
 ## Performance
 
-End-to-end wall time on a 4.45M-row real CAFA prediction file
-(`cafa_eval(...)` from OBO load through metric assembly), measured on a
-single workstation. "Upstream" is unmodified
+End-to-end wall time of a full `cafa_eval(...)` call (OBO load → ground
+truth parse → prediction parse + propagate → confusion matrix sweep →
+metric assembly → best-row aggregation), measured on a single
+workstation at `n_cpu=1` and the CAFA-default `th_step=0.01`
+(99 thresholds). "Upstream" is unmodified
 [`claradepaolis/CAFA-evaluator-PK`](https://github.com/claradepaolis/CAFA-evaluator-PK)
-at commit `16a6a6d`.
+at commit `16a6a6d`. Corpus: real CAFA 6 PROTEA artifacts
+(8 712 BP / 4 992 MF / 5 125 CC ground-truth proteins, ~700 k-row
+prediction file, `known_terms.tsv` exclude set for PK).
 
-| Mode | Upstream (n_cpu=1) | Fork (n_cpu=1) | Upstream (n_cpu=4) | Fork (n_cpu=4) | Speedup |
-|---|---|---|---|---|---|
-| NK | 1.39 s | **0.45 s** | 1.45 s | **0.42 s** | 3.1× – 3.5× |
-| PK | 2.96 s | **0.65 s** | 2.61 s | **0.63 s** | 4.1× – 4.6× |
+| Mode | Upstream | Fork (B1–B7) | Speedup |
+|---|---|---|---|
+| NK | 92.96 s | **4.08 s** | **22.8×** |
+| PK | 418.53 s | **10.33 s** | **40.5×** |
 
-Single-threaded fork beats upstream-at-4-cores for both modes. After the
-sparse kernels landed, confusion-matrix compute is `<15 ms` total,
-propagate is `~40 ms`, and the prediction parser is now the dominant
-term at `~400–500 ms` — hence the PyArrow rewrite (Phase B3).
+The sparse confusion-matrix kernels (Phase B1/B2) are approximately flat
+in `n_tau` — moving from `th_step=0.05` (20 thresholds) to the CAFA
+default `th_step=0.01` (99 thresholds) costs the fork virtually nothing,
+while upstream's per-threshold scan scales linearly. Hence the speedup
+ratio grows with `n_tau`.
+
+Where the fork's remaining time goes on PK end-to-end (10 s):
+
+| Phase | Time |
+|---|---|
+| OBO parse | 1.9 s |
+| Ground truth parse + propagate | 3.8 s |
+| Prediction parse + propagate (PyArrow) | 2.4 s |
+| `compute_metrics` × 3 namespaces (sparse PK) | 1.8 s |
+| Eval/normalise/aggregate plumbing | 0.4 s |
 
 ## Runtime knobs
 

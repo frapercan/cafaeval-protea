@@ -38,14 +38,19 @@ else:
 def _run_fork(corpus, call_kwargs):
     from cafaeval.evaluation import cafa_eval
 
+    # ``_variant_with_exclude`` is injected by the conftest fixture to
+    # route the call to the PK or the NK / LK branch. Strip it before
+    # forwarding to ``cafa_eval`` itself.
+    kwargs = dict(call_kwargs)
+    with_exclude = bool(kwargs.pop("_variant_with_exclude", True))
     return cafa_eval(
         str(corpus.obo_path),
         str(corpus.pred_dir),
         str(corpus.gt_path),
         ia=str(corpus.ia_path),
-        exclude=str(corpus.exclude_path),
+        exclude=str(corpus.exclude_path) if with_exclude else None,
         toi_file=str(corpus.toi_path),
-        **call_kwargs,
+        **kwargs,
     )
 
 

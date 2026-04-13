@@ -45,7 +45,7 @@ EVAL_KWARGS = dict(
 )
 
 
-def _run_upstream(corpus, call_kwargs: Dict[str, Any]):
+def _run_upstream(corpus, call_kwargs: Dict[str, Any], *, with_exclude: bool):
     from cafaeval.evaluation import cafa_eval
 
     t0 = time.perf_counter()
@@ -54,7 +54,7 @@ def _run_upstream(corpus, call_kwargs: Dict[str, Any]):
         str(corpus.pred_dir),
         str(corpus.gt_path),
         ia=str(corpus.ia_path),
-        exclude=str(corpus.exclude_path),
+        exclude=str(corpus.exclude_path) if with_exclude else None,
         toi_file=str(corpus.toi_path),
         **call_kwargs,
     )
@@ -62,30 +62,46 @@ def _run_upstream(corpus, call_kwargs: Dict[str, Any]):
     return df, dfs_best, elapsed
 
 
-def freeze(spec: CorpusSpec, corpora_root: pathlib.Path, oracle_root: pathlib.Path) -> pathlib.Path:
+def freeze(spec: CorpusSpec, corpora_root: pathlib.Path, oracle_root: pathlib.Path) -> list[pathlib.Path]:
+    """Freeze both the PK (with exclude) and the NK/LK (without exclude)
+    code paths. The resulting oracles cover both branches of
+    ``compute_metrics`` and ``evaluate_prediction`` so a parity test
+    cannot regress either branch silently.
+    """
     corpus = build_corpus(spec, corpora_root)
     LOG.info("corpus %s fingerprint=%s", spec.name, corpus.fingerprint)
-
-    df, dfs_best, elapsed = _run_upstream(corpus, EVAL_KWARGS)
-    LOG.info("upstream cafa_eval finished in %.2fs (rows=%d)", elapsed, 0 if df is None else len(df))
-
-    record = OracleRecord(
-        corpus_name=spec.name,
-        corpus_fingerprint=corpus.fingerprint,
-        call_kwargs=dict(EVAL_KWARGS),
-        df_pickle=pickle.dumps(df),
-        dfs_best_pickle=pickle.dumps(dfs_best),
-        python_version=sys.version,
-        platform=platform.platform(),
-        elapsed_seconds=elapsed,
-        upstream_commit_hint="16a6a6d",
-    )
-
     oracle_root.mkdir(parents=True, exist_ok=True)
-    out_path = oracle_root / f"{spec.name}.pkl"
-    out_path.write_bytes(pickle.dumps(record))
-    LOG.info("wrote oracle to %s", out_path)
-    return out_path
+    out_paths: list[pathlib.Path] = []
+
+    for variant, with_exclude in (("pk", True), ("nk", False)):
+        df, dfs_best, elapsed = _run_upstream(
+            corpus, EVAL_KWARGS, with_exclude=with_exclude
+        )
+        LOG.info(
+            "upstream cafa_eval[%s] finished in %.2fs (rows=%d)",
+            variant, elapsed, 0 if df is None else len(df),
+        )
+
+        kwargs = dict(EVAL_KWARGS)
+        kwargs["_with_exclude"] = with_exclude
+        record = OracleRecord(
+            corpus_name=f"{spec.name}.{variant}",
+            corpus_fingerprint=corpus.fingerprint,
+            call_kwargs=kwargs,
+            df_pickle=pickle.dumps(df),
+            dfs_best_pickle=pickle.dumps(dfs_best),
+            python_version=sys.version,
+            platform=platform.platform(),
+            elapsed_seconds=elapsed,
+            upstream_commit_hint="16a6a6d",
+        )
+
+        out_path = oracle_root / f"{spec.name}.{variant}.pkl"
+        out_path.write_bytes(pickle.dumps(record))
+        LOG.info("wrote oracle to %s", out_path)
+        out_paths.append(out_path)
+
+    return out_paths
 
 
 def main() -> None:

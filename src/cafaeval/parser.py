@@ -176,7 +176,7 @@ def gt_parser(gt_file, ontologies):
                       _triples=(nz_rows, nz_cols, nz_scores))
             logger.debug("gt matrix propagated {} {} ".format(ns, matrix))
             gts[ns] = GroundTruth(ids, matrix, ns)
-            logger.info('Ground truth: {}, proteins {}, annotations {}, replaced alt. ids {}'.format(ns, len(ids),
+            logger.debug('Ground truth: {}, proteins {}, annotations {}, replaced alt. ids {}'.format(ns, len(ids),
                                                                                 np.count_nonzero(matrix), replaced.get(ns, 0)))
 
     return gts
@@ -468,10 +468,12 @@ def pred_parser(pred_file, ontologies, gts, prop_mode, max_terms=None, n_cpu=0):
         )
 
     t1 = time.time()
+    path_label = "vectorised" if used_fast_path else "legacy"
     _parser_logger.info(
-        "pred_parser prepared",
+        f"pred_parser read: {os.path.basename(pred_file)} ({path_label}) "
+        f"in {t1 - t0:.2f}s",
         extra={"file": pred_file, "seconds": round(t1 - t0, 3),
-               "path": "vectorised" if used_fast_path else "legacy"},
+               "path": path_label},
     )
 
     predictions = {}
@@ -482,16 +484,18 @@ def pred_parser(pred_file, ontologies, gts, prop_mode, max_terms=None, n_cpu=0):
             t_ns = time.time()
             propagate(matrix[ns], ontologies[ns], ontologies[ns].order, mode=prop_mode, parallel=n_cpu)
             _parser_logger.info(
-                "pred_parser propagated namespace",
+                f"pred_parser propagated {ns:>18s}: "
+                f"{len(ids[ns])} proteins, {int(np.count_nonzero(matrix[ns]))} annots "
+                f"({time.time() - t_ns:.2f}s)",
                 extra={"file": pred_file, "ns": ns,
+                       "proteins": int(len(ids[ns])),
+                       "annotations": int(np.count_nonzero(matrix[ns])),
                        "seconds": round(time.time() - t_ns, 3)},
             )
             logger.debug("pred matrix {} {} ".format(ns, matrix))
             predictions[ns] = Prediction(ids[ns], matrix[ns], ns)
-            logger.info("Prediction: {}, {}, proteins {}, annotations {}, replaced alt. ids {}".format(pred_file, ns, len(ids[ns]),
-                                                                                np.count_nonzero(matrix[ns]), replaced.get(ns, 0)))
     _parser_logger.info(
-        "pred_parser propagated",
+        f"pred_parser total: read+propagate in {t1 - t0 + (time.time() - tp0):.2f}s",
         extra={"file": pred_file, "seconds": round(time.time() - tp0, 3)},
     )
 

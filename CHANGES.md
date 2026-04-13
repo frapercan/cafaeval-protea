@@ -272,6 +272,112 @@ The cold-cache cost is now dominated by the one-shot
 net end-to-end saving is ~2 s per call (gt + gt_exclude combined).
 Parity: 6/6 on Phase B oracle gate.
 
+## 2026-04-13 — Parity coverage extended to NK/LK branch
+
+The frozen oracle had only ever been recorded with `exclude=...` set,
+so every parity test was running the PK code path of
+`compute_metrics` / `evaluate_prediction` and the NK / LK branch was
+silently uncovered. After Phase B7 touched both branches that gap
+became load-bearing.
+
+- `bench/freeze_oracle.py`: each corpus is now frozen twice — once
+  with the PK exclude file (`<name>.pk.pkl`) and once without
+  (`<name>.nk.pkl`). Both records are produced from a single run of
+  the script against unmodified upstream `16a6a6d`.
+- `tests/diff/conftest.py`: the parity fixture parametrises over
+  `(corpus, variant)` pairs and falls back to the legacy
+  `<name>.pkl` filename so old environments still work.
+- `tests/diff/test_oracle_parity.py`: forwards the variant flag into
+  `cafa_eval` so the right branch executes.
+- `tests/diff/test_self_parity_nk_lk.py`: new in-fork self-parity
+  test that runs the same synthetic corpus through `cafa_eval` twice
+  with `CAFAEVAL_SPARSE=1` and `CAFAEVAL_SPARSE=0` and asserts both
+  paths agree within Phase B tolerance. This catches sparse-vs-dense
+  divergence on the NK / LK kernel without needing an upstream
+  install.
+- `bench/oracle/`: regenerated against pristine
+  `claradepaolis/CAFA-evaluator-PK 16a6a6d` — six pickle files
+  (`{tiny,medium,large}.{pk,nk}.pkl`) replacing the three legacy
+  single-variant files.
+
+Result: the parity gate now runs **12 oracle tests** (3 corpora × 2
+variants × 2 metric scopes) plus **1 self-parity NK test**, all
+passing under Phase B tolerance. LK shares its code path with NK in
+upstream and the fork, so the same gate covers it.
+
+## 2026-04-13 — Phase B7: trim compute_metrics + evaluate_prediction overhead
+
+Line-level timing of `compute_metrics` on the BP namespace
+(8 712 × 25 950 PK matrix, ``th_step=0.01``) revealed that after
+B1/B2/B6 the prep block was the new bottleneck: 5.4 s of prep for 0.8 s
+of kernel. The breakdown was:
+
+| Line | Wall time |
+|---|---|
+| `gt_matrix[:, toi].sum(1) > 0` | 1.15 s |
+| `g = gt_with_annots[:, toi]` | 1.07 s |
+| `p = pred[proteins_has_gt, :][:, toi]` | 2.29 s |
+| `excluded_mask`, `valid_gt_mask`, `n_gt` | 0.59 s |
+| `pred_sub = pred[proteins_has_gt, :]` | 0.61 s |
+
+`evaluate_prediction` then ran a parallel block of dead work *before*
+calling `compute_metrics`: it rebuilt `proteins_has_gt`, then on the PK
+branch ran a Python list comprehension over `proteins_with_gt` calling
+`np.setdiff1d` + a generator-sum over per-protein toi slices, just to
+compute the scalar `num_annot_prots`. Cost: ~1 s per namespace.
+
+Changes:
+
+- `evaluation.compute_metrics`:
+  - Detect `toi_is_full` once via a stride check + `np.array_equal`.
+    When the toi covers the whole ontology the column slices `g`,
+    `p`, `gt_with_annots[:, toi]` collapse to no-ops; the `toi_mask` is
+    built as a single `np.ones` instead of zero-fill + scatter.
+  - Replace `gt_matrix[:, toi].sum(1) > 0` with
+    `(gt_matrix[:, toi] != 0).any(axis=1)` — `any` short-circuits per
+    row on bool input.
+  - Defer `g`, `p`, `gt_with_annots`, `pred_sub` materialisation to the
+    branch that actually consumes them. The PK sparse path no longer
+    builds `g`/`p` (dead variables); the NK sparse path no longer
+    materialises a separate `gt_with_annots`.
+  - When `proteins_has_gt.all()`, skip the `pred[proteins_has_gt, :]`
+    and `gt_matrix[proteins_with_gt, :]` fancy-index copies entirely.
+  - Drop the redundant `gt_exclude.matrix[...] != 0` cast — that
+    matrix is already bool, so the comparison was a no-op that
+    duplicated the fancy-index copy.
+  - Replace the dense ``valid_gt_mask`` materialisation (three full
+    ``(n_prot, n_terms)`` bool ops) with a sparse-coordinate walk
+    (`np.nonzero` + `bincount`) when computing `n_gt`.
+- `evaluation._count_proteins_in_toi`: new vectorised helper that
+  counts proteins surviving the per-protein exclude set in one bool
+  AND + `.any(axis=1).sum()` instead of the per-protein
+  `setdiff1d` loop. Used by both the unweighted and the weighted
+  branches of `evaluate_prediction`.
+
+Benchmark on the real CAFA 6 PROTEA corpus
+(8 712 BP / 4 992 MF / 5 125 CC ground-truth proteins,
+``predictions.tsv`` from `2ff4af25-d091-468a-8197-50c6e894657a`,
+``known_terms.tsv`` exclude set, ``th_step=0.01``, ``n_cpu=1``):
+
+| Variant | Before B7 | After B7 |
+|---|---|---|
+| NK end-to-end | 6.68 s | 4.08 s |
+| PK end-to-end | 28.73 s | 10.33 s |
+| `compute_metrics pk` BP prep | 5.443 s | 0.599 s |
+| `compute_metrics pk` BP kernel | 1.805 s | 0.746 s |
+| `evaluate_prediction` PK total | 5.68 s | 2.05 s |
+
+Parity: 6/6 on Phase B oracle gate. Bit-exact on all three synthetic
+corpora.
+
+End-to-end speedup vs upstream `CAFA-evaluator-PK 16a6a6d`
+(measured at ``th_step=0.01``, the CAFA default):
+
+| Variant | Upstream | Fork (B1–B7) | Speedup |
+|---|---|---|---|
+| NK | 92.96 s | 4.08 s | **22.8×** |
+| PK | 418.53 s | 10.33 s | **40.5×** |
+
 ### Planned (not yet applied)
 
 - Phase B5: optional numba kernel on the per-namespace parser
