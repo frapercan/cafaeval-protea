@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "src"))
 project = "cafaeval-protea"
 author = "Francisco Miguel Pérez Canales"
 copyright = "2026, Francisco Miguel Pérez Canales"
-release = "1.2.1.post1"
+release = "0.1.0"
 
 extensions = [
     "sphinx.ext.autodoc",
