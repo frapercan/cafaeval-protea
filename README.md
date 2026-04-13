@@ -1,5 +1,10 @@
 # cafaeval-protea
 
+[![PyPI](https://img.shields.io/pypi/v/cafaeval-protea.svg)](https://pypi.org/project/cafaeval-protea/)
+[![Python](https://img.shields.io/pypi/pyversions/cafaeval-protea.svg)](https://pypi.org/project/cafaeval-protea/)
+[![Documentation](https://img.shields.io/readthedocs/cafaeval-protea.svg)](https://cafaeval-protea.readthedocs.io)
+[![License](https://img.shields.io/pypi/l/cafaeval-protea.svg)](LICENCE.md)
+
 > **This is a modified fork.** See [`CHANGES.md`](CHANGES.md) for the full list
 > of modifications and their dates (required by GPLv3 §5.a).
 
@@ -174,6 +179,11 @@ pip install "cafaeval-protea[fast]"       # enables the PyArrow parser fast path
 The hard dependency set is kept at `numpy + pandas + matplotlib`;
 `pyarrow>=12` is an optional `[fast]` extra. Without it, `pred_parser`
 automatically falls back to the legacy loop.
+
+Full documentation — installation, quickstart, per-phase performance
+breakdown, parity harness, architecture of the sparse kernels, and
+API reference — is hosted at
+[**cafaeval-protea.readthedocs.io**](https://cafaeval-protea.readthedocs.io).
 
 ---
 
