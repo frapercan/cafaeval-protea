@@ -45,11 +45,13 @@ dependencies = [
 # PyArrow enables the vectorised prediction-file parser (B3). Without it
 # the package falls back to the legacy line-by-line loop automatically.
 fast = ["pyarrow>=12"]
+docs = ["sphinx>=7", "furo>=2024.1"]
 
 [project.urls]
 Homepage = "https://github.com/frapercan/cafaeval-protea"
 Repository = "https://github.com/frapercan/cafaeval-protea"
-Changelog = "https://github.com/frapercan/cafaeval-protea/blob/fork/CHANGES.md"
+Documentation = "https://cafaeval-protea.readthedocs.io"
+Changelog = "https://github.com/frapercan/cafaeval-protea/blob/main/CHANGES.md"
 Upstream = "https://github.com/BioComputingUP/CAFA-evaluator"
 "Direct parent (PK)" = "https://github.com/claradepaolis/CAFA-evaluator-PK"
 "Speedup source (T0chka)" = "https://github.com/T0chka/CAFA-evaluator-PK-speedup"
