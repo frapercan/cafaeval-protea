@@ -69,4 +69,8 @@ def oracle_and_corpus(request):
                       if not k.startswith("_")}
     oracle.call_kwargs = cleaned_kwargs
     oracle.call_kwargs.setdefault("_variant_with_exclude", with_exclude)
+    # Expose the variant for downstream tests that need to gate PK-only
+    # behaviour (e.g. xfailing PK parity when the fork intentionally
+    # diverges from upstream).
+    oracle.variant = variant
     return oracle, corpus

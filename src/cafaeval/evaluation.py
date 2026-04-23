@@ -301,7 +301,15 @@ def compute_confusion_matrix_exclude_sparse(
     tp_totals = tp_at_tau.sum(axis=0)
     pred_totals = pred_at_tau.sum(axis=0)
 
-    metrics[:, 0] = (pred_at_tau > 0).sum(axis=0)
+    # For coverage (`n` column) to match the denominator used by normalize()
+    # — which is the post-exclusion protein count from _count_proteins_in_toi
+    # — restrict the row count to proteins that still have ≥1 GT annotation
+    # in TOI after the per-protein exclude mask. Without this, `n` counts
+    # proteins whose TOI annotations were all already known in t0, while the
+    # denominator drops them, producing coverage > 1 in PK.
+    eligible_rows = ((gt_sub != 0) & toi_mask[None, :] & (~excluded_mask)).any(axis=1)
+
+    metrics[:, 0] = ((pred_at_tau > 0) & eligible_rows[:, None]).sum(axis=0)
     metrics[:, 1] = tp_totals
     metrics[:, 2] = pred_totals - tp_totals
     metrics[:, 3] = total_gt - tp_totals

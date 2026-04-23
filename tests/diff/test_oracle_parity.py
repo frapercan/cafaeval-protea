@@ -22,8 +22,34 @@ import pickle
 
 import numpy as np
 import pandas as pd
+import pytest
 
 PHASE = os.environ.get("CAFAEVAL_PARITY_PHASE", "B").upper()
+
+# The frozen upstream oracle carries a bug in the PK branch: `metrics['n']`
+# counts predictions across all proteins with ≥1 GT in TOI, while the
+# denominator `ne` drops proteins whose annotations were all already known
+# in t0. The resulting coverage > 1 is mathematically impossible and leaks
+# into `n` (used also as the precision denominator under
+# `normalization='cafa'`). This fork fixes the row masking in
+# `compute_confusion_matrix_exclude_sparse` to restrict `n` to the same
+# post-exclusion population, which deliberately diverges from upstream on
+# the PK variants of the parity oracle.
+_PK_DIVERGENCE_REASON = (
+    "PK parity intentionally diverges from upstream oracle — the fork fixes "
+    "cov>1 and per-protein `n` double-counting in the PK kernel. See "
+    "tests/test_pk_coverage_bug.py for the regression gate."
+)
+
+
+def _maybe_xfail_pk(oracle) -> None:
+    """Skip parity comparison when the fixture is a PK variant.
+
+    PK variants enshrine the upstream bug; comparing would fail by
+    design. NK/LK variants must stay bit-/ULP-exact.
+    """
+    if oracle.corpus_name.endswith(".pk") or getattr(oracle, "variant", None) == "pk":
+        pytest.xfail(_PK_DIVERGENCE_REASON)
 
 if PHASE == "A":
     ATOL = 0.0
@@ -80,6 +106,7 @@ def _assert_df_equal(actual: pd.DataFrame, expected: pd.DataFrame, label: str) -
 
 def test_main_df_matches_oracle(oracle_and_corpus):
     oracle, corpus = oracle_and_corpus
+    _maybe_xfail_pk(oracle)
     df_fork, _ = _run_fork(corpus, oracle.call_kwargs)
     df_oracle = pickle.loads(oracle.df_pickle)
     _assert_df_equal(df_fork, df_oracle, label=f"{oracle.corpus_name}.df")
@@ -87,6 +114,7 @@ def test_main_df_matches_oracle(oracle_and_corpus):
 
 def test_best_metrics_match_oracle(oracle_and_corpus):
     oracle, corpus = oracle_and_corpus
+    _maybe_xfail_pk(oracle)
     _, dfs_best_fork = _run_fork(corpus, oracle.call_kwargs)
     dfs_best_oracle = pickle.loads(oracle.dfs_best_pickle)
 
