@@ -384,3 +384,67 @@ End-to-end speedup vs upstream `CAFA-evaluator-PK 16a6a6d`
   reduction to halve parser time again.
 - Optional: numba-JIT fallback for environments without pyarrow, if
   profiling on a legacy-only install warrants it.
+
+---
+
+## 2026-04-23 — PK coverage fix (semantic divergence from upstream)
+
+Fixed a latent bug in the PK kernel where ``metrics['n']`` (the row
+count used for coverage and, under ``normalization='cafa'``, for the
+precision denominator) was computed over ``proteins_with_gt``
+pre-exclusion, while the matching denominator ``ne`` from
+``_count_proteins_in_toi`` drops proteins whose TOI annotations were
+fully contained in the per-protein exclude set. The asymmetry
+produces ``coverage > 1`` (observed at 1.3–1.9 on an internal GOA
+220→230 benchmark) and silently under-divides precision, suppressing
+PK Fmax by roughly 30–40 % relative to the semantically correct value.
+
+Changed in ``src/cafaeval/evaluation.py``,
+``compute_confusion_matrix_exclude_sparse``:
+
+- Compute ``eligible_rows`` as the boolean any-axis reduction of
+  ``(gt_sub != 0) & toi_mask[None, :] & (~excluded_mask)`` — exactly
+  the per-row form of ``_count_proteins_in_toi``'s PK predicate.
+- Apply ``eligible_rows[:, None]`` when counting
+  ``(pred_at_tau > 0).sum(axis=0)`` so ``metrics['n']`` lives in the
+  same population as ``ne``.
+
+TP / FP / FN and the recall column are unaffected. Precision under
+``normalization='cafa'`` is tightened to the correct value; coverage
+becomes bounded in ``[0, 1]``.
+
+Added in ``tests/test_pk_coverage_bug.py``:
+
+- ``test_pk_coverage_never_exceeds_one``: three-protein scenario with
+  one fully-known-in-t0 protein. Asserts ``n ≤ ne`` at every tau and
+  that ``n[tau=0.1] == 2`` (the two eligible proteins only).
+- ``test_pk_precision_recall_unchanged_by_fix``: asserts TP count is
+  preserved, guarding against accidental regressions that would
+  extend the fix beyond its intended scope.
+
+Updated in ``tests/diff/test_oracle_parity.py`` and
+``tests/diff/conftest.py``:
+
+- ``_maybe_xfail_pk(oracle)`` helper xfails the PK variants of
+  ``test_main_df_matches_oracle`` and ``test_best_metrics_match_oracle``
+  with a documented reason string. NK / LK variants continue to
+  enforce bit-exact parity with upstream. The fixture now exposes
+  ``oracle.variant`` so the helper can gate correctly.
+
+This is the first semantic divergence from upstream
+``CAFA-evaluator-PK``. Every previous phase (A, B1–B7) was a pure
+speedup and maintained bit- or ULP-exact parity. The fork now
+carries a **correctness** delta as well, documented end-to-end here
+and in ``README.md``.
+
+Effect on an internal GOA 220→230 benchmark (re-run after the fix):
+
+| Cell | Before | After | Δ |
+|---|---|---|---|
+| PK BPO Fmax | 0.130 | 0.198 | +0.068 |
+| PK CCO Fmax | 0.301 | 0.366 | +0.065 |
+| PK MFO Fmax | 0.210 | 0.291 | +0.081 |
+| PK BPO precision | 0.088 | 0.157 | +0.069 |
+| PK BPO coverage | 1.94  | 0.97  | −0.97  |
+
+NK / LK cells unchanged within float noise.
