@@ -10,9 +10,9 @@ parity harness against pristine upstream.
 At a glance
 -----------
 
-End-to-end speedup versus upstream ``CAFA-evaluator-PK 16a6a6d`` on the
-real CAFA 6 PROTEA corpus, measured at ``th_step=0.01`` (the CAFA
-default), ``n_cpu=1``:
+End-to-end speedup versus upstream ``CAFA-evaluator-PK 16a6a6d`` on a
+real GOA-derived benchmark corpus, measured at ``th_step=0.01`` (the
+CAFA default), ``n_cpu=1``:
 
 +---------+-----------+--------------+-----------+
 | Variant | Upstream  | Fork (B1–B7) | Speedup   |

@@ -1,7 +1,7 @@
 Performance
 ===========
 
-All benchmarks below are on the real CAFA 6 PROTEA corpus
+All benchmarks below are on a real GOA-derived benchmark corpus
 (8 712 BP / 4 992 MF / 5 125 CC ground-truth proteins, ~4.45 M
 prediction rows) with ``th_step=0.01`` and ``n_cpu=1``. Upstream is
 pristine ``claradepaolis/CAFA-evaluator-PK 16a6a6d``.
@@ -129,7 +129,7 @@ Before B7, the PK prep block dominated BP namespace cost:
    * - ``pred_sub = pred[proteins_has_gt, :]``
      - 0.61 s
 
-After B7, end-to-end on the PROTEA corpus:
+After B7, end-to-end on the same corpus:
 
 .. list-table::
    :header-rows: 1
@@ -180,15 +180,15 @@ Individual hot spots, isolated:
      - 2.73 s
      - 1.45 s (1.88×)
    * - ``gt_parser`` (NK, cold cache)
-     - real PROTEA
+     - real corpus
      - 1.71 s
      - 1.46 s
    * - ``gt_parser`` (PK, cold cache)
-     - real PROTEA
+     - real corpus
      - 2.21 s
      - 0.64 s
    * - ``gt_parser`` (PK, hot ancestor cache)
-     - real PROTEA
+     - real corpus
      - 2.21 s
      - 0.16 s
 

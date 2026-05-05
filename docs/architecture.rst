@@ -157,8 +157,8 @@ When ``toi_is_full`` is true:
 * ``toi_mask`` is built as ``np.ones(n_terms, dtype=bool)`` instead
   of ``np.zeros`` + scatter.
 
-On the PROTEA corpus this alone removed ~3.4 s of BP-namespace prep
-cost per ``compute_metrics`` call.
+On the benchmark corpus this alone removed ~3.4 s of BP-namespace
+prep cost per ``compute_metrics`` call.
 
 Triples passthrough API
 -----------------------

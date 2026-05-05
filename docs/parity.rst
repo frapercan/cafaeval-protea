@@ -67,6 +67,37 @@ fixture instance per ``(corpus, variant)`` pair, so the harness runs
 NK and LK share the same code path in both upstream and the fork, so
 the NK oracle also gates LK.
 
+Semantic divergence on PK
+-------------------------
+
+Starting with commit ``cec8ccd`` (2026-04-23), the fork carries a
+deliberate semantic divergence from upstream on the PK branch. Upstream
+counts ``metrics['n']`` (the row count used for coverage and, under
+``normalization='cafa'``, the precision denominator) over every row of
+``proteins_with_gt`` (any GT in the term-of-interest set, pre-exclusion),
+while the matching denominator ``ne`` from ``_count_proteins_in_toi``
+drops proteins whose TOI annotations were fully contained in the
+per-protein exclude set. The asymmetry can push ``coverage = n / ne``
+above 1 (observed at 1.3–1.9 on a real GOA-derived benchmark).
+
+The fix in ``compute_confusion_matrix_exclude_sparse`` masks the row
+count to the same post-exclusion eligibility set, so ``n`` and ``ne``
+live in the same population. TP, FP, FN and recall are unaffected;
+precision under ``normalization='cafa'`` tightens to the correct value
+and coverage is bounded in ``[0, 1]``.
+
+Effect on the parity harness:
+
+* PK oracle tests xfail on purpose. The helper ``_maybe_xfail_pk`` in
+  ``tests/diff/conftest.py`` skips the comparison for PK variants of
+  ``test_main_df_matches_oracle`` and ``test_best_metrics_match_oracle``.
+* NK and LK oracle tests continue to enforce strict parity (Phase B
+  tolerance).
+* A regression test ``tests/test_pk_coverage_bug.py`` pins the bounded
+  ``n ≤ ne`` invariant after the fix.
+
+The change is documented end-to-end in ``CHANGES.md``.
+
 Self-parity (sparse vs dense)
 -----------------------------
 
@@ -108,7 +139,7 @@ The recipe used to produce the current oracle::
     git -C /tmp/cafa-upstream checkout 16a6a6d
 
     # 2. Run the freezer against it, importing upstream from source.
-    cd /home/frapercan/Thesis/repositories/cafaeval-protea
+    cd /path/to/cafaeval-protea
     PYTHONPATH=/tmp/cafa-upstream/src:. \
         python -m bench.freeze_oracle
 
