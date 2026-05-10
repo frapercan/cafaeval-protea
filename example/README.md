@@ -5,10 +5,6 @@ This directory contains files for an example of partial knowledge evaluation and
 This is a "toy" example using a subgraph of the Biological Process (BP) aspect of the Gene Ontology. It is only for
 illustrative purposess.
 
-![Example of partial knowledge evaluation](sample_eval.jpg)
-
-
-
 To run the example,
 ``python3 /path/to/CAFA-evaluator/src/cafaeval/__main__.py go-sample.obo predictions ground_truth_partial.tsv -toi toi.tsv -known known_t0.tsv``
 
