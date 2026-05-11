@@ -1,0 +1,42 @@
+# Version control
+.git
+.gitignore
+.github
+
+# Python build artefacts
+__pycache__
+*.py[cod]
+*$py.class
+*.egg-info
+.eggs
+build
+dist
+.venv
+venv
+env
+
+# Test / lint / type caches
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+coverage.xml
+
+# Docs and notebooks
+docs
+*.ipynb
+bench
+example
+
+# Editor
+.idea
+.vscode
+*.swp
+
+# OS
+.DS_Store
+
+# Project local
+logs
+*.log
