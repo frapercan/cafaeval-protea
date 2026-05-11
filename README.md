@@ -235,6 +235,61 @@ documented there.
 
 ---
 
+## Test
+
+```bash
+pip install -e ".[fast,test]"
+
+# Unit tests (PK coverage bug regression, parity harness)
+pytest tests/ -q
+
+# Parity oracle: build frozen oracle outputs from the unmodified upstream
+cd bench && python build_oracle.py          # one-shot, slow (5-10 min)
+
+# Compare the fork against the oracle (Phase B tolerance by default)
+CAFAEVAL_PARITY_PHASE=B pytest tests/diff/ -q
+```
+
+The parity tests under `tests/diff/` require the oracle at `bench/oracle/*.pkl`.
+Run `build_oracle.py` once after cloning. CI runs the parity suite at every PR.
+
+## Contributing
+
+This is a fork maintained alongside the PROTEA research project. Contributions
+that fix bugs, improve performance, or add correctness tests are welcome.
+Changes that alter scoring semantics require parity evidence against the
+upstream oracle.
+
+**Branch strategy:** changes against the fork go to `main` (this fork does not
+use a `develop` branch). Keep the fork's `main` rebased on the upstream
+`claradepaolis/CAFA-evaluator-PK` periodically.
+
+```bash
+git clone https://github.com/frapercan/cafaeval-protea.git
+cd cafaeval-protea
+git checkout -b fix/my-fix
+
+pip install -e ".[fast,test,dev]"
+
+# Make your changes, then verify:
+pytest tests/ -q
+CAFAEVAL_PARITY_PHASE=B pytest tests/diff/ -q
+ruff check src
+mypy src
+
+# Open a pull request targeting main
+```
+
+Key constraints:
+- **No optimization without parity evidence.** Every performance
+  change must pass `tests/diff/test_oracle_parity.py`. Bit-exact
+  for Phase A, `rtol=1e-6` for Phase B (ULP float reorder in PK).
+- **Document all modifications.** GPLv3 §5.a requires that changes
+  are listed in `CHANGES.md` with their dates. Update it in every PR.
+- **Preserve upstream attribution.** The original copyright notice
+  and upstream paper citation must not be removed from `LICENCE.md`
+  or the README.
+
 ## License
 
 GNU General Public License v3 (GPLv3), inherited unchanged from the
