@@ -23,7 +23,7 @@ keywords = [
     "information accretion",
     "ontology",
 ]
-license = {file = "LICENCE.md", "content-type" = "text/markdown"}
+license = {file = "LICENCE.md"}
 classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3",
@@ -55,6 +55,9 @@ Changelog = "https://github.com/frapercan/cafaeval-protea/blob/main/CHANGES.md"
 Upstream = "https://github.com/BioComputingUP/CAFA-evaluator"
 "Direct parent (PK)" = "https://github.com/claradepaolis/CAFA-evaluator-PK"
 "Speedup source (T0chka)" = "https://github.com/T0chka/CAFA-evaluator-PK-speedup"
+
+[tool.poetry]
+packages = [{include = "cafaeval", from = "src"}]
 
 [tool.setuptools.packages.find]
 where = ["src"]
