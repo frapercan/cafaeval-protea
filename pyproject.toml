@@ -45,7 +45,7 @@ dependencies = [
 # PyArrow enables the vectorised prediction-file parser (B3). Without it
 # the package falls back to the legacy line-by-line loop automatically.
 fast = ["pyarrow>=12"]
-docs = ["sphinx>=7", "furo>=2024.1"]
+docs = ["sphinx>=7", "furo>=2024.1", "myst-parser>=2", "sphinx-copybutton>=0.5"]
 
 [project.urls]
 Homepage = "https://github.com/frapercan/cafaeval-protea"
@@ -58,6 +58,15 @@ Upstream = "https://github.com/BioComputingUP/CAFA-evaluator"
 
 [tool.poetry]
 packages = [{include = "cafaeval", from = "src"}]
+
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+sphinx = ">=7"
+furo = ">=2024.1"
+myst-parser = ">=2"
+sphinx-copybutton = ">=0.5"
 
 [tool.setuptools.packages.find]
 where = ["src"]
