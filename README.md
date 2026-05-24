@@ -5,6 +5,16 @@
 [![Documentation](https://img.shields.io/readthedocs/cafaeval-protea.svg)](https://cafaeval-protea.readthedocs.io)
 [![License](https://img.shields.io/pypi/l/cafaeval-protea.svg)](LICENCE.md)
 
+**What:** Standalone fork of [CAFA-evaluator-PK](https://github.com/claradepaolis/CAFA-evaluator-PK) with a PK-coverage fix and 22-40x speedup, validated bit-exact against upstream. Used by [PROTEA](https://github.com/frapercan/PROTEA) to benchmark GO-term predictions via `run_cafa_evaluation`.
+
+**Where in the PROTEA stack:** This is the evaluator component. PROTEA calls `cafa_eval(...)` from this package inside the `run_cafa_evaluation` operation on the `protea.evaluations` queue. The import path is unchanged from upstream (`from cafaeval.evaluation import cafa_eval`). See the [full stack table](#repositories-in-the-protea-stack) below.
+
+**Install:** `pip install cafaeval-protea` (or `pip install "cafaeval-protea[fast]"` for the PyArrow parser).
+
+**Status:** production. Deployed in PROTEA and validated for CAFA 6 evaluation runs. Bit-exact parity with upstream for Phase A; `rtol=1e-6` tolerance for Phase B sparse PK kernel (ULP float reorder only).
+
+---
+
 > **This is a modified fork.** See [`CHANGES.md`](CHANGES.md) for the full list
 > of modifications and their dates (required by GPLv3 §5.a).
 
@@ -292,8 +302,7 @@ Key constraints:
 
 ## License
 
-GNU General Public License v3 (GPLv3), inherited unchanged from the
-upstream. See [`LICENCE.md`](LICENCE.md).
+GPLv3, inherited unchanged from the upstream. See [`LICENCE.md`](LICENCE.md).
 
 Per GPLv3 §5.a, modifications introduced by this fork are documented in
 [`CHANGES.md`](CHANGES.md) with their dates. The original upstream
