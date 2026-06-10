@@ -21,7 +21,7 @@ def test_intersection(intersection, pred_counts, true_counts):
     :param true_counts: array of positive counts from ground truth
     """
     if not np.all(pred_counts >= intersection):
-        raise Exception(f'Count of positive prediction smaller than intersection')
+        raise Exception('Count of positive prediction smaller than intersection')
 
     if not np.all(true_counts >= intersection):
-        raise Exception(f'Count of positive annotations smaller than intersection')
+        raise Exception('Count of positive annotations smaller than intersection')

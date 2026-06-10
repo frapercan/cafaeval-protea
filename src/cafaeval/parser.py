@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 _parser_logger = logging.getLogger("cafaeval.parser")
 _parser_logger.addHandler(logging.NullHandler())
-# import xml.etree.ElementTree as ET
 
 
 def obo_parser(obo_file, valid_rel=("is_a", "part_of"), ia_file=None, orphans=True):
