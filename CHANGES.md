@@ -448,3 +448,37 @@ Effect on an internal GOA 220→230 benchmark (re-run after the fix):
 | PK BPO coverage | 1.94  | 0.97  | −0.97  |
 
 NK / LK cells unchanged within float noise.
+
+---
+
+## 2026-06-10: Quality, tooling and documentation sweep
+
+Behaviour-preserving maintenance. No change to any metric value; the
+NK / LK parity oracle stays bit-/ULP-exact and the PK regression gate is
+unaffected.
+
+Source cleanup (`src/cafaeval/`):
+
+- Removed dead code: the commented-out alternate `compute_s` body, the
+  stale `xml.etree` import comment in the parser, and the unused `copy`
+  import in `graph.py`.
+- Renamed the ambiguous loop variable `l` to `adj` in `Graph.top_sort`.
+- Added a package docstring and `__version__` to `__init__.py`.
+- Dropped redundant `f` prefixes on two non-interpolated strings in
+  `tests.py`.
+
+Tooling and packaging (`pyproject.toml`):
+
+- Added `[tool.ruff]`, `[tool.mypy]` and `[tool.pytest.ini_options]`
+  configuration. Ruff is scoped to pyflakes plus a curated pycodestyle
+  subset so the cherry-picked upstream kernels are not reformatted.
+- Added `test` and `dev` optional-dependency extras (referenced by the
+  README but previously undefined).
+
+CI and docs:
+
+- Added a `ci` workflow (ruff + mypy + pytest + parity across Python
+  3.10 / 3.11 / 3.12) and a `docs` workflow (Sphinx build with warnings
+  as errors).
+- Enabled `sphinx_copybutton`, fixed the documentation source branch to
+  `main`, and added an API reference page for `cafaeval.tests`.

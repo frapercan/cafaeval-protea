@@ -1,5 +1,4 @@
 import numpy as np
-import copy
 import logging
 import os
 
@@ -106,9 +105,9 @@ class Graph:
             idx = queue.pop(0)
             indexes.append(idx)
             in_degree[idx] -= 1
-            l = self.terms_list[idx]['adj']
-            if len(l) > 0:
-                for j in l:
+            adj = self.terms_list[idx]['adj']
+            if len(adj) > 0:
+                for j in adj:
                     in_degree[j] -= 1
                     if in_degree[j] == 0:
                         queue.append(j)

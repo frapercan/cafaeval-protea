@@ -6,6 +6,7 @@ ia.ipynb
 harmonic_mean.ipynb
 .idea
 /src/cafaeval.egg-info/
+/src/*.egg-info/
 /.venv/
 /dist/
 src/.ipynb_checkpoints

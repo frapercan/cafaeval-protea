@@ -253,15 +253,18 @@ pip install -e ".[fast,test]"
 # Unit tests (PK coverage bug regression, parity harness)
 pytest tests/ -q
 
-# Parity oracle: build frozen oracle outputs from the unmodified upstream
-cd bench && python build_oracle.py          # one-shot, slow (5-10 min)
-
-# Compare the fork against the oracle (Phase B tolerance by default)
+# Compare the fork against the checked-in oracle (Phase B tolerance by default)
 CAFAEVAL_PARITY_PHASE=B pytest tests/diff/ -q
 ```
 
-The parity tests under `tests/diff/` require the oracle at `bench/oracle/*.pkl`.
-Run `build_oracle.py` once after cloning. CI runs the parity suite at every PR.
+The parity tests under `tests/diff/` run against the oracle snapshots
+committed at `bench/oracle/*.pkl`, so no extra setup is required after
+cloning. CI runs the parity suite at every PR.
+
+To re-freeze the oracle against a pristine upstream install (only needed
+when the synthetic corpus generator or upstream changes), see the
+"Re-freezing the oracle" section of the documentation; the freezer is
+`bench/freeze_oracle.py`, run as `python -m bench.freeze_oracle`.
 
 ## Contributing
 

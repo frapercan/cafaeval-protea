@@ -29,7 +29,6 @@ def compute_f(pr, rc):
 
 def compute_s(ru, mi):
     return np.sqrt(ru**2 + mi**2)
-    # return np.where(np.isnan(ru), mi, np.sqrt(ru + np.nan_to_num(mi)))
 
 
 def compute_confusion_matrix(tau_arr, g, pred_matrix, toi, n_gt, ic_arr=None):
