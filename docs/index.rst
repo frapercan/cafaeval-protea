@@ -48,6 +48,7 @@ synthetic corpora, under ``rtol=1e-6, atol=1e-9``. See :doc:`parity`.
    api/evaluation
    api/graph
    api/parser
+   api/tests
 
 Attribution
 -----------

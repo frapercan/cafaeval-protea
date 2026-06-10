@@ -18,6 +18,7 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "sphinx.ext.autosummary",
+    "sphinx_copybutton",
 ]
 
 autosummary_generate = True
@@ -42,6 +43,6 @@ html_theme = "furo"
 html_title = f"{project} {release}"
 html_theme_options = {
     "source_repository": "https://github.com/frapercan/cafaeval-protea",
-    "source_branch": "fork",
+    "source_branch": "main",
     "source_directory": "docs/",
 }
