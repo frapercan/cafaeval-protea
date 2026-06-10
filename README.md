@@ -197,6 +197,49 @@ API reference — is hosted at
 
 ---
 
+## Quickstart
+
+The package installs a `cafaeval` console script and exposes the same
+`cafa_eval(...)` entry point as the upstream. Both take an OBO ontology, a
+folder of prediction files, and a ground-truth file. A self-contained toy
+corpus ships under [`example/`](example/).
+
+Command line:
+
+```bash
+# Plain (no-knowledge) evaluation
+cafaeval example/go-sample.obo example/predictions example/ground_truth_partial.tsv
+
+# Partial-Knowledge evaluation: exclude each target's already-known terms
+cafaeval example/go-sample.obo example/predictions example/ground_truth_partial.tsv \
+    -toi example/toi.tsv -known example/known_t0.tsv
+```
+
+Python:
+
+```python
+from cafaeval.evaluation import cafa_eval
+
+# df_all  -> every (namespace, threshold) row
+# best    -> best row per metric (Fmax, Smin, weighted variants)
+df_all, best = cafa_eval(
+    "example/go-sample.obo",
+    "example/predictions",
+    "example/ground_truth_partial.tsv",
+    toi_file="example/toi.tsv",     # terms-of-interest filter (optional)
+    exclude="example/known_t0.tsv", # PK known-annotation exclusion (optional)
+)
+
+print(best["f"])      # Fmax
+print(best["s"])      # Smin
+```
+
+Weighted scores (`wf`, `ws`) are produced only when an information-accretion
+file is supplied via `ia=`. The import path is the upstream `cafaeval`, so
+existing downstream code keeps working with no changes.
+
+---
+
 ## Logging
 
 The upstream evaluator is silent at the library boundary, which makes
@@ -305,7 +348,19 @@ Key constraints:
 
 ## License
 
-GPLv3, inherited unchanged from the upstream. See [`LICENCE.md`](LICENCE.md).
+**GPLv3**, inherited unchanged from the upstream. See [`LICENCE.md`](LICENCE.md)
+and the attribution chain in [`NOTICE`](NOTICE).
+
+This fork stays under the GNU General Public License v3.0 because both its
+ancestors are copyleft:
+[CAFA-evaluator](https://github.com/BioComputingUP/CAFA-evaluator) (© 2022
+Damiano Piovesan) and
+[CAFA-evaluator-PK](https://github.com/claradepaolis/CAFA-evaluator-PK) are
+GPLv3. Under GPLv3 §5 the whole combined work, including this fork's
+optimizations and the parity harness, must be distributed under GPLv3. A
+permissive or public-domain dedication (for example The Unlicense) would not
+be legally clean here and is therefore not applied: the copyleft obligation
+carries through to every derivative.
 
 Per GPLv3 §5.a, modifications introduced by this fork are documented in
 [`CHANGES.md`](CHANGES.md) with their dates. The original upstream
