@@ -1,0 +1,37 @@
+name: docs
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Sphinx build (warnings as errors)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + docs extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[docs]'
+
+      - name: Build HTML docs
+        run: python -m sphinx -b html -W --keep-going docs docs/_build/html
+
+      - name: Upload built docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-docs
+          path: docs/_build/html

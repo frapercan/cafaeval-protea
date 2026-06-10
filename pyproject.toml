@@ -46,6 +46,8 @@ dependencies = [
 # the package falls back to the legacy line-by-line loop automatically.
 fast = ["pyarrow>=12"]
 docs = ["sphinx>=7", "furo>=2024.1", "myst-parser>=2", "sphinx-copybutton>=0.5"]
+test = ["pytest>=7"]
+dev = ["ruff>=0.4", "mypy>=1.8", "pytest>=7"]
 
 [project.urls]
 Homepage = "https://github.com/frapercan/cafaeval-protea"
@@ -71,6 +73,29 @@ sphinx-copybutton = ">=0.5"
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = false
+
+[tool.ruff]
+line-length = 120
+src = ["src", "bench", "tests"]
+
+[tool.ruff.lint]
+# Conservative on a numerics library: pyflakes (F) and a curated pycodestyle
+# (E) subset only. We deliberately do not enable import-sorting or
+# line-length autoformatting, which would churn the cherry-picked upstream
+# kernels without changing behaviour.
+select = ["F", "E4", "E7", "E9"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+# pandas / numpy / pyarrow ship partial or no stubs; the fork does not
+# annotate the numeric kernels, so run mypy in its default (non-strict)
+# mode purely as an import-and-syntax gate.
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
 
 [project.scripts]
 cafaeval = "cafaeval.__main__:command_line"
