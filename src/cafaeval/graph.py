@@ -21,7 +21,6 @@ class Graph:
         terms_dict = {term: {name: , namespace: , def: , alt_id: , rel:}}
         """
         self.namespace = namespace
-        self.dag = []  # [[], ...] terms (rows, axis 0) x parents (columns, axis 1)
         self.terms_dict = {}  # {term: {index: , name: , namespace: , def: }  used to assign term indexes in the gt
         self.terms_dict_alt = {}  # {alt_id: set(term, ...) }  alternative ids to canonical ids
         self.terms_list = []  # [{id: term, name:, namespace: , def:, adj: set(), children: set()}, ...]
@@ -42,43 +41,81 @@ class Graph:
 
         self.idxs += 1
 
-        self.dag = np.zeros((self.idxs, self.idxs), dtype='bool')
-
+        # Sparse DAG: ``dag[i, j] == 1`` (i is_a/part_of j) is held as the
+        # per-term parent (``adj``) and child sets plus CSR index arrays, not a
+        # dense (idxs x idxs) boolean matrix that is almost entirely zeros.
         # id1 term (row, axis 0), id2 parent (column, axis 1)
         for id1, id2, ns in rel_list:
             if self.terms_dict.get(id2):
                 i = self.terms_dict[id1]['index']
                 j = self.terms_dict[id2]['index']
-                self.dag[i, j] = 1
-                # Remove duplicates in adj and children lists
-                # This ensures that a parent-child term does not have multiple edges, which could lead to wrong topological sorting
+                # Sets dedupe duplicate edges, exactly like the boolean matrix:
+                # a parent-child pair contributes a single edge.
                 self.terms_list[i]['adj'].add(j)
                 self.terms_list[j]['children'].add(i)
                 logging.debug("i,j {},{} {},{}".format(i, j, id1, id2))
             else:
                 logging.debug('Skipping branch to external namespace: {}'.format(id2))
-        logging.debug("dag {}".format(self.dag))
-        
+
+        self._build_sparse_dag()
+        logging.debug("dag edges {}".format(int(self._par_indptr[-1])))
+
         # Topological sorting
         self.top_sort()
         logging.debug("order sorted {}".format(self.order))
 
         if orphans:
-            self.toi = np.arange(self.dag.shape[0])  # All terms, also those without parents
+            self.toi = np.arange(self.idxs)  # All terms, also those without parents
         else:
-            self.toi = np.nonzero(self.dag.sum(axis=1) > 0)[0]  # Only terms with parents
+            self.toi = np.nonzero(self._parent_count > 0)[0]  # Only terms with parents
         logging.debug("toi {}".format(self.toi))
 
         if ia_dict is not None:
             self.set_ia(ia_dict)
 
+        # total = terms with >=1 parent; roots = no parents; leaves = no children
         logging.info("Ontology: {}, total {}, roots {}, leaves {}, alternative_ids {}".format(self.namespace,
-                                                                len(np.where(self.dag.sum(axis=1) != 0)[0]),
-                                                                len(np.where(self.dag.sum(axis=1) == 0)[0]),
-                                                                len(np.where(self.dag.sum(axis=0) == 0)[0]),
+                                                                int(np.count_nonzero(self._parent_count)),
+                                                                int(np.count_nonzero(self._parent_count == 0)),
+                                                                int(np.count_nonzero(self._child_count == 0)),
                                                                 len(self.terms_dict_alt)))
 
         return
+
+    def _build_sparse_dag(self):
+        """Build CSR parent/child index arrays and degree vectors from the
+        per-term ``adj`` (parents) and ``children`` sets, reproducing the old
+        dense boolean adjacency exactly:
+
+        * ``self._parent_count[i] == old_dag.sum(axis=1)[i]``  (parents of i)
+        * ``self._child_count[j]  == old_dag.sum(axis=0)[j]``  (children of j)
+        * ``self._par_idx[self._par_indptr[t]:...]`` are the parents of ``t``,
+          ascending, i.e. exactly ``np.nonzero(old_dag[t, :])``.
+        * ``self._chi_idx[self._chi_indptr[t]:...]`` are the children of ``t``,
+          ascending, i.e. exactly ``np.flatnonzero(old_dag[:, t])``.
+        """
+        n = self.idxs
+        parent_count = np.fromiter((len(t['adj']) for t in self.terms_list),
+                                   dtype=np.int64, count=n)
+        child_count = np.fromiter((len(t['children']) for t in self.terms_list),
+                                  dtype=np.int64, count=n)
+        par_indptr = np.zeros(n + 1, dtype=np.int64)
+        np.cumsum(parent_count, out=par_indptr[1:])
+        chi_indptr = np.zeros(n + 1, dtype=np.int64)
+        np.cumsum(child_count, out=chi_indptr[1:])
+        par_idx = np.empty(int(par_indptr[-1]), dtype=np.int64)
+        chi_idx = np.empty(int(chi_indptr[-1]), dtype=np.int64)
+        for t in range(n):
+            adj = self.terms_list[t]['adj']
+            if adj:
+                par_idx[par_indptr[t]:par_indptr[t + 1]] = sorted(adj)
+            chl = self.terms_list[t]['children']
+            if chl:
+                chi_idx[chi_indptr[t]:chi_indptr[t + 1]] = sorted(chl)
+        self._parent_count = parent_count
+        self._child_count = child_count
+        self._par_indptr, self._par_idx = par_indptr, par_idx
+        self._chi_indptr, self._chi_idx = chi_indptr, chi_idx
 
     def top_sort(self):
         """
@@ -87,10 +124,12 @@ class Graph:
         """
         indexes = []
         visited = 0
-        (rows, cols) = self.dag.shape
+        rows = self.idxs
 
         # create a vector containing the in-degree of each node
-        in_degree = self.dag.sum(axis=0)
+        # (number of children per node == old dense dag.sum(axis=0)); copy so
+        # the Kahn sweep below can decrement it in place
+        in_degree = self._child_count.copy()
         # logging.debug("degree {}".format(in_degree))
 
         # find the nodes with in-degree 0 (leaves) and add them to the queue
@@ -157,9 +196,13 @@ _PROPAGATE_WORK_THRESHOLD = 800_000_000
 def _children_cache(ont):
     children_by_term = getattr(ont, "_children_by_term", None)
     if children_by_term is None:
+        # CSR children slices (ascending), identical to the old
+        # ``np.flatnonzero(dag[:, term_id])`` per-term scan but without the
+        # dense matrix.
+        indptr, idx = ont._chi_indptr, ont._chi_idx
         children_by_term = [
-            np.flatnonzero(ont.dag[:, term_id])
-            for term_id in range(ont.dag.shape[1])
+            idx[indptr[term_id]:indptr[term_id + 1]]
+            for term_id in range(len(indptr) - 1)
         ]
         ont._children_by_term = children_by_term
     return children_by_term
@@ -192,20 +235,14 @@ def _ancestors_csr(ont):
     if cached is not None:
         return cached
 
-    dag = ont.dag
-    n = int(dag.shape[0])
+    n = int(ont.idxs)
 
-    # Vectorised build of parents_by_term: one full np.nonzero scan instead
-    # of n_terms per-row flatnonzero calls. ``dag[i, j] == 1`` means ``i``
-    # is_a ``j``, so the non-zero rows of ``dag[t, :]`` are the parents of
-    # ``t``. Grouping by child row gives us the per-term parent list.
-    edge_rows, edge_cols = np.nonzero(dag)
-    sort_idx = np.argsort(edge_rows, kind='stable')
-    sorted_rows = edge_rows[sort_idx]
-    sorted_cols = edge_cols[sort_idx]
-    p_counts = np.bincount(sorted_rows, minlength=n)
-    p_indptr = np.zeros(n + 1, dtype=np.int64)
-    np.cumsum(p_counts, out=p_indptr[1:])
+    # Parent CSR is precomputed on the Graph: ``sorted_cols[p_indptr[t]:p_indptr[t+1]]``
+    # are the parents of ``t``, ascending. This reproduces exactly what the old
+    # ``np.nonzero(dense_dag)`` + group-by-child-row built, without ever
+    # materialising the dense matrix.
+    p_indptr = ont._par_indptr
+    sorted_cols = ont._par_idx
 
     # ont.order is leaves → roots; reverse so parents are always finished
     # before we look them up.
