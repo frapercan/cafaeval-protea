@@ -482,3 +482,35 @@ CI and docs:
   as errors).
 - Enabled `sphinx_copybutton`, fixed the documentation source branch to
   `main`, and added an API reference page for `cafaeval.tests`.
+
+## 2026-06-19 — Phase C: memory (sparse DAG + sparse prediction)
+
+Phases A/B optimise time; Phase C removes the two dense allocations that
+dominate memory at full-GO scale, with no loss of speed. All changes are
+**bit-exact** (`atol=0, rtol=0`) against the pre-C fork on every scenario
+and on a 24 000-term × 30 000-protein synthetic corpus.
+
+- C1 — `graph.py`: replaced the dense `(n_terms, n_terms)` boolean DAG
+  adjacency (`Graph.dag`) with CSR parent/child index arrays plus
+  in/out-degree vectors built from the per-term `adj` / `children` sets
+  (`Graph._build_sparse_dag`). Rewrote every consumer (`top_sort`
+  in-degrees, `toi`, `_children_cache`, `_ancestors_csr`, the
+  ontology-stats log) to read the sparse form; counts and CSR slices
+  reproduce the old `dag.sum(axis=…)` / `np.nonzero` results exactly.
+  `top_sort` now uses `collections.deque` (`O(1)` `popleft`) instead of
+  `list.pop(0)` (`O(n²)`); FIFO order and `Graph.order` are unchanged.
+  Full-GO build: 1.87 s → 0.61 s, DAG peak RSS 312 MB → 108 MB.
+- C3 — `parser.py` / `graph.py` / `evaluation.py`: the dense
+  `(n_prot, n_terms)` `float64` prediction matrix is never materialised.
+  Added `graph.propagate_to_coo` (sparse-native `mode='max'` push-up,
+  bit-identical to the dense `propagate`). The vectorised parser builds a
+  `scipy.sparse.csr_matrix` straight from its group-max COO; the legacy
+  fallback densifies then re-sparsifies. The sparse NK/PK kernels read the
+  CSR's `data`/`indices`/`indptr` directly (not `scipy.sparse.find`, which
+  re-sorts each call); the dense fallback (`CAFAEVAL_SPARSE=0`) densifies
+  only its own slice. Ground truth stays dense. Corpus above: peak RSS
+  11.9 GB → 7.0 GB (−41 %), wall-clock 51 s → 42 s.
+
+Not merged: a Phase C4 prototype made ground-truth / exclude matrices
+sparse too (~1.2 GB more), but the sparse TP-membership gather doubled
+wall-clock, so the time regression outweighed the memory gain.
