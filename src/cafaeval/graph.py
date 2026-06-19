@@ -1,6 +1,7 @@
 import numpy as np
 import logging
 import os
+from collections import deque
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -132,8 +133,10 @@ class Graph:
         in_degree = self._child_count.copy()
         # logging.debug("degree {}".format(in_degree))
 
-        # find the nodes with in-degree 0 (leaves) and add them to the queue
-        queue = np.nonzero(in_degree == 0)[0].tolist()
+        # find the nodes with in-degree 0 (leaves) and add them to the queue.
+        # deque gives O(1) popleft; a plain list's pop(0) is O(n) -> O(n^2) total.
+        # FIFO order is identical, so self.order is unchanged.
+        queue = deque(np.nonzero(in_degree == 0)[0].tolist())
         # logging.debug("queue {}".format(queue))
 
         # for each element of the queue increment visits, add them to the list of ordered nodes
@@ -141,7 +144,7 @@ class Graph:
         # and add them to the queue if they reach in-degree == 0
         while queue:
             visited += 1
-            idx = queue.pop(0)
+            idx = queue.popleft()
             indexes.append(idx)
             in_degree[idx] -= 1
             adj = self.terms_list[idx]['adj']
