@@ -3,6 +3,7 @@ import os
 import time
 import numpy as np
 import pandas as pd
+from scipy.sparse import issparse
 import multiprocessing as mp
 from cafaeval.parser import obo_parser, gt_parser, pred_parser, gt_exclude_parser, update_toi
 from cafaeval.tests import test_norm_metric, test_intersection
@@ -18,6 +19,25 @@ _eval_logger.addHandler(logging.NullHandler())
 # Return a mask for all the predictions (matrix) >= tau
 def solidify_prediction(pred, tau):
     return pred >= tau
+
+
+def _csr_nonzeros(mat):
+    """(rows, cols, vals) of a CSR's stored non-zeros.
+
+    Reads the CSR arrays directly (``data``/``indices``/``indptr``) instead of
+    ``scipy.sparse.find``, which re-runs ``sum_duplicates`` (a full argsort of
+    every non-zero) on each call. Our prediction CSR is already canonical, and
+    the kernel's downstream bincount/searchsorted are order-independent, so no
+    sort is needed. Explicit zeros are dropped to match ``np.nonzero`` exactly.
+    """
+    mat = mat.tocsr()
+    data = mat.data
+    cols = mat.indices.astype(np.int64, copy=False)
+    rows = np.repeat(np.arange(mat.shape[0], dtype=np.int64), np.diff(mat.indptr))
+    if data.size and not data.all():
+        keep = data != 0
+        return rows[keep], cols[keep], data[keep]
+    return rows, cols, data
 
 
 # computes the f metric for each precision and recall in the input arrays
@@ -155,13 +175,21 @@ def compute_confusion_matrix_sparse(tau_arr, g, pred_matrix, toi, n_gt, ic_arr=N
     # we only need its sum to fill the FN column.
     total_gt = float(n_gt.sum())
 
-    nz_rows, nz_cols = np.nonzero(pred_matrix)
+    if issparse(pred_matrix):
+        # CSR prediction: pull (row, col, score) straight from the stored
+        # non-zeros — no dense (n_prot x n_terms) is ever materialised.
+        nz_rows, nz_cols, nz_scores = _csr_nonzeros(pred_matrix)
+    else:
+        nz_rows, nz_cols = np.nonzero(pred_matrix)
+        nz_scores = pred_matrix[nz_rows, nz_cols]
     if nz_rows.size == 0:
         metrics[:, 3] = total_gt
         return metrics
 
-    nz_scores = pred_matrix[nz_rows, nz_cols]
-    nz_is_tp = g[nz_rows, nz_cols].astype(np.float64, copy=False)
+    # g (ground truth) stays dense, so the TP gather is a plain fancy index.
+    # The downstream bincount/searchsorted are order-independent, so the
+    # row/col order returned by find() does not affect the result.
+    nz_is_tp = np.asarray(g[nz_rows, nz_cols]).ravel().astype(np.float64, copy=False)
 
     # Highest tau index at which a pred with this score is still active.
     # A pred is active at tau_arr[k] iff k <= last_idx.
@@ -260,16 +288,25 @@ def compute_confusion_matrix_exclude_sparse(
 
     total_gt = float(n_gt.sum())
 
-    # Only predictions at valid columns contribute. ``pred_sub != 0`` is the
-    # sparsity filter; the two mask ANDs apply the PK exclusion.
-    valid = (pred_sub != 0) & toi_mask[None, :] & (~excluded_mask)
-    nz_rows, nz_cols = np.nonzero(valid)
+    # Only predictions at valid columns contribute. Pull the prediction
+    # non-zeros (from CSR storage when sparse, no dense materialisation), then
+    # apply the PK exclusion (column in TOI and not excluded) on the flat
+    # coordinate arrays — equivalent to the old dense
+    # ``(pred_sub != 0) & toi_mask[None,:] & ~excluded_mask`` then np.nonzero.
+    if issparse(pred_sub):
+        p_rows, p_cols, p_scores = _csr_nonzeros(pred_sub)
+    else:
+        p_rows, p_cols = np.nonzero(pred_sub)
+        p_scores = pred_sub[p_rows, p_cols]
+    keep = toi_mask[p_cols] & (~excluded_mask[p_rows, p_cols])
+    nz_rows = p_rows[keep]
+    nz_cols = p_cols[keep]
+    nz_scores = p_scores[keep]
     if nz_rows.size == 0:
         metrics[:, 3] = total_gt
         return metrics
 
-    nz_scores = pred_sub[nz_rows, nz_cols]
-    nz_is_tp = gt_sub[nz_rows, nz_cols].astype(np.float64, copy=False)
+    nz_is_tp = np.asarray(gt_sub[nz_rows, nz_cols]).ravel().astype(np.float64, copy=False)
 
     last_idx = np.searchsorted(tau_arr, nz_scores, side='right') - 1
     if last_idx.min() < 0:
@@ -520,10 +557,13 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
         # kernel is fast enough that fork overhead would dominate.
         metrics = compute_confusion_matrix_sparse(tau_arr, g, p, toi, n_gt, ic_arr)
     elif gt_exclude is None:
+        # Dense fallback kernel (opt-in, CAFAEVAL_SPARSE=0) needs a dense
+        # prediction; densify the CSR just for this path.
+        p_dense = p.toarray() if issparse(p) else p
         tau_chunks = np.array_split(tau_arr, n_cpu)
         ctx = mp.get_context("fork")
         with ctx.Pool(processes=n_cpu, initializer=_cm_init,
-                      initargs=(g, p, toi, n_gt, ic_arr)) as pool:
+                      initargs=(g, p_dense, toi, n_gt, ic_arr)) as pool:
             metrics = np.concatenate(pool.map(_cm_worker, tau_chunks), axis=0)
     elif use_sparse:
         # PK sparse kernel: boolean-masked single-pass scatter. The toi and
@@ -545,6 +585,8 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
             pred_sub = pred
         else:
             pred_sub = pred[proteins_has_gt, :]
+        if issparse(pred_sub):
+            pred_sub = pred_sub.toarray()
         ctx = mp.get_context("fork")
         with ctx.Pool(processes=n_cpu, initializer=_cme_init,
                       initargs=(gt_perprotein, pred_sub, toi_perprotein, n_gt, ic_arr)) as pool:

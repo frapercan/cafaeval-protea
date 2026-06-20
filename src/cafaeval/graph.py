@@ -363,6 +363,66 @@ def _propagate_sparse_pushup(matrix, ont, mode, triples=None):
         matrix[nz_rows, nz_cols] = nz_scores
 
 
+def propagate_to_coo(triples, ont, mode="max"):
+    """Sparse-native propagation that never materialises a dense matrix.
+
+    Takes input non-zeros ``triples = (rows, cols, scores)`` and returns the
+    propagated non-zeros ``(out_rows, out_cols, out_vals)`` after pushing each
+    score up to every ancestor (self inclusive) and reducing by ``(row,
+    ancestor)`` with a group-max. This is exactly the result
+    ``_propagate_sparse_pushup`` would scatter into a freshly-zeroed dense
+    matrix for ``mode='max'`` (where every output cell's value is the group
+    max, since each input cell is its own ancestor), so callers that build a
+    CSR/COO directly get bit-identical values without the O(n_prot*n_terms)
+    allocation. Only ``mode='max'`` is supported; ``mode='fill'`` differs
+    (zero-only overwrite) and must use the dense path.
+    """
+    if mode != "max":
+        raise ValueError("propagate_to_coo only supports mode='max'")
+    rows, cols, scores = triples
+    rows = np.asarray(rows, dtype=np.int64)
+    cols = np.asarray(cols, dtype=np.int64)
+    scores = np.asarray(scores)
+    if rows.size == 0:
+        empty_i = np.empty(0, dtype=np.int64)
+        return empty_i, empty_i.copy(), np.empty(0, dtype=scores.dtype)
+
+    indptr, anc_indices = _ancestors_csr(ont)
+    n_terms = int(ont.idxs)
+
+    n_anc = (indptr[cols + 1] - indptr[cols]).astype(np.int64)
+    total = int(n_anc.sum())
+    if total == 0:
+        empty_i = np.empty(0, dtype=np.int64)
+        return empty_i, empty_i.copy(), np.empty(0, dtype=scores.dtype)
+
+    # Gather every (row, ancestor-of-col, score) triple, vectorised — same
+    # index arithmetic as _propagate_sparse_pushup.
+    block_starts = indptr[cols]
+    global_offsets = np.zeros(rows.size + 1, dtype=np.int64)
+    np.cumsum(n_anc, out=global_offsets[1:])
+    base_per_j = np.repeat(block_starts, n_anc)
+    local_offset = np.arange(total, dtype=np.int64) - np.repeat(global_offsets[:-1], n_anc)
+    expanded_cols = anc_indices[base_per_j + local_offset]
+    expanded_rows = np.repeat(rows, n_anc)
+    expanded_scores = np.repeat(scores, n_anc)
+
+    # Group-max over (row, ancestor) via a single flat key + reduceat.
+    flat = expanded_rows.astype(np.int64) * n_terms + expanded_cols
+    order_idx = np.argsort(flat, kind='stable')
+    flat_s = flat[order_idx]
+    scores_s = expanded_scores[order_idx]
+    group_starts = np.empty(flat_s.size, dtype=bool)
+    group_starts[0] = True
+    np.not_equal(flat_s[1:], flat_s[:-1], out=group_starts[1:])
+    start_idx = np.flatnonzero(group_starts)
+    group_max = np.maximum.reduceat(scores_s, start_idx)
+    unique_flat = flat_s[start_idx]
+    out_rows = unique_flat // n_terms
+    out_cols = unique_flat % n_terms
+    return out_rows, out_cols, group_max
+
+
 def propagate(matrix, ont, order, mode="max", parallel=0, chunk_rows=65536,
               _shm_name=None, _shape=None, _dtype_str=None,
               _row_start=None, _row_end=None, _deepest=None, _triples=None):
