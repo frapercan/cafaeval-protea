@@ -85,8 +85,17 @@ def _assert_df_equal(actual: pd.DataFrame, expected: pd.DataFrame, label: str) -
     assert list(actual.columns) == list(expected.columns), (
         f"{label}: column mismatch\nfork={list(actual.columns)}\noracle={list(expected.columns)}"
     )
-    assert actual.index.equals(expected.index), (
-        f"{label}: index mismatch ({len(actual)} vs {len(expected)} rows)"
+    # Compare the index by value, not via ``Index.equals``. The latter is
+    # dtype-sensitive: pandas 3.x (resolved under py3.11/3.12) infers the
+    # PyArrow-backed ``StringDtype`` for the ``filename``/``ns`` levels,
+    # while pandas 2.x (the last release supporting py3.10) keeps them as
+    # plain ``object``. The frozen oracle was serialized under pandas 3.x,
+    # so ``equals`` returns False on py3.10 despite identical labels and
+    # ordering. Comparing the materialised tuples is dtype-agnostic and
+    # still pins exact row alignment.
+    assert actual.index.tolist() == expected.index.tolist(), (
+        f"{label}: index mismatch ({len(actual)} vs {len(expected)} rows)\n"
+        f"fork={actual.index.tolist()}\noracle={expected.index.tolist()}"
     )
     for col in expected.columns:
         a = actual[col].to_numpy()
