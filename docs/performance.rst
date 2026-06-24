@@ -192,8 +192,83 @@ Individual hot spots, isolated:
      - 2.21 s
      - 0.16 s
 
+Phase C — memory
+----------------
+
+Phases A and B optimise *time*; Phase C removes the two dense
+``O(n²)`` / ``O(n_prot · n_terms)`` allocations that dominate *memory*
+at full-GO scale, with no loss of speed. Parity is **bit-exact**
+(``atol=0, rtol=0``) against the pre-C fork on every scenario and on a
+24 000-term × 30 000-protein synthetic corpus, so it does not move the
+upstream tolerance.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 10 20 70
+
+   * - Phase
+     - Area
+     - Change
+   * - C1
+     - Graph
+     - Sparse DAG. The dense ``(n_terms, n_terms)`` bool adjacency is
+       replaced by CSR parent/child index arrays + degree vectors built
+       from the per-term ``adj`` / ``children`` sets. ``top_sort`` uses
+       ``collections.deque`` (``O(1)`` ``popleft``) instead of
+       ``list.pop(0)``.
+   * - C3
+     - Prediction
+     - The dense ``(n_prot, n_terms)`` ``float64`` prediction matrix is
+       never built. ``graph.propagate_to_coo`` propagates the parser's
+       COO sparse-natively; ``Prediction.matrix`` is a CSR; the sparse
+       kernels read its ``data``/``indices``/``indptr`` directly.
+
+Measured
+~~~~~~~~
+
+``Graph`` construction on the full GO (``go-basic.obo``, 24 547 BP /
+10 123 MF / 4 069 CC terms):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 30 30
+
+   * - Measurement
+     - Before C1
+     - After C1
+   * - Build time (3 namespaces)
+     - 1.87 s
+     - 0.61 s (~3×)
+   * - Peak RSS (DAG only)
+     - 312 MB
+     - 108 MB (~3×)
+
+End-to-end ``cafa_eval`` on a 24 000-term × 30 000-protein synthetic
+corpus (IA-weighted, PK, ``th_step=0.01``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 30 30
+
+   * - Measurement
+     - Before C3
+     - After C3
+   * - Peak RSS
+     - 11.9 GB
+     - 7.0 GB (−41 %)
+   * - Wall-clock
+     - 51 s
+     - 42 s
+
 What is left on the table
 -------------------------
+
+* Phase C4 — sparse ground-truth / exclude matrices. Prototyped and
+  bit-exact, but the sparse TP gather (``g[r, c]`` membership) is
+  slower than a dense fancy index, so it traded ~1.2 GB for ~2× wall
+  clock. Not merged: the time regression outweighs the memory gain.
+  Would need a sparse-intersection TP gather (``pred.multiply(gt)``)
+  to be worthwhile.
 
 * Phase B5 — optional numba kernel on the per-namespace parser
   reduction. Not scheduled; the current PyArrow path already brings

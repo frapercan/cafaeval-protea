@@ -94,6 +94,71 @@ has, avoiding an ``np.nonzero`` scan of the full ``(n_prot, n_terms)``
 bool matrix on the hot path. On the BP ontology that scan was 488 M
 cells to find ~27 000 non-zeros.
 
+Sparse DAG adjacency
+--------------------
+
+Upstream stores the ontology DAG as a dense ``(n_terms, n_terms)``
+boolean adjacency matrix (``Graph.dag``). For the BP namespace
+(~25 000 terms) that is a ~600 MB allocation whose every cell is read
+by ``dag.sum(axis=0)`` (in-degrees for the topological sort),
+``dag.sum(axis=1)`` (terms-of-interest), and ``np.nonzero(dag)``
+(parent lists for the ancestor cache) — all ``O(n_terms²)`` scans of
+a matrix that is >99.9 % zeros.
+
+The fork drops the dense matrix entirely. Each term already keeps its
+parent set (``adj``) and child set (``children``); from these, a CSR
+parent/child index pair plus the in/out-degree vectors are built once
+in ``Graph._build_sparse_dag``. Every former consumer reads the
+sparse form:
+
+* in-degrees for the Kahn topological sort come from the child-count
+  vector (``_child_count``), not ``dag.sum(axis=0)``;
+* ``toi`` comes from ``_parent_count > 0``;
+* ``_children_cache`` / ``_ancestors_csr`` slice the CSR index arrays
+  instead of calling ``np.flatnonzero(dag[:, t])`` / ``np.nonzero(dag)``.
+
+The counts and CSR slices reproduce the dense reductions exactly
+(``_parent_count[i] == dag.sum(axis=1)[i]``; CSR slices are ascending,
+matching ``np.nonzero``), so the topological order, ``toi`` and
+ancestor sets are bit-identical. The Kahn queue also moves from a
+Python ``list`` (``pop(0)`` is ``O(n)`` → ``O(n²)``) to
+``collections.deque`` (``popleft`` is ``O(1)``); the FIFO order, and
+therefore ``Graph.order``, is unchanged.
+
+Result: ``Graph`` construction on the full GO drops peak adjacency
+memory from ~600 MB to a few MB, and builds ~3× faster (no
+``O(n_terms²)`` allocation or scans).
+
+Sparse prediction storage (no dense ``(n_prot, n_terms)``)
+----------------------------------------------------------
+
+Upstream — and the fork through Phase B — materialise the prediction
+scores as a dense ``(n_prot, n_terms)`` ``float64`` matrix. At
+full-GO scale (~25 000 terms × tens of thousands of proteins) that is
+the single largest allocation in an evaluation — tens of GB — yet it
+is almost entirely zero: each protein predicts a few hundred terms.
+
+The fork never builds it. The vectorised parser already computes the
+prediction non-zeros as COO ``(rows, cols, scores)`` for its
+group-max; instead of scattering them into a dense matrix it keeps the
+COO, propagates it through ``graph.propagate_to_coo`` (a sparse-native
+``mode='max'`` push-up that returns propagated COO, bit-identical to
+the dense ``propagate``), and stores the result as a
+``scipy.sparse.csr_matrix`` on ``Prediction.matrix``.
+
+The sparse confusion-matrix kernels already consume only the
+non-zeros, so they read the CSR directly via its ``data`` / ``indices``
+/ ``indptr`` arrays (not ``scipy.sparse.find``, which re-runs
+``sum_duplicates`` — a full argsort of every non-zero — on each call).
+Ground truth stays dense, so the TP gather ``g[nz_rows, nz_cols]`` is
+unchanged. The dense fallback path (``CAFAEVAL_SPARSE=0``) densifies
+only its own slice.
+
+On a 25 000-term × 30 000-protein corpus this cuts peak RSS from
+**11.9 GB to 7.0 GB (−41 %)** while *also* shaving wall-clock (the
+kernel no longer scans, and ``find`` is gone), bit-exact against the
+dense path on every NK / PK / weighted / no-orphans scenario.
+
 Vectorised prediction parser
 ----------------------------
 
