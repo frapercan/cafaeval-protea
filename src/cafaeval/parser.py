@@ -1,7 +1,8 @@
 import os
 import time
-from cafaeval.graph import Graph, Prediction, GroundTruth, propagate
+from cafaeval.graph import Graph, Prediction, GroundTruth, propagate, propagate_to_coo
 import numpy as np
+from scipy.sparse import csr_matrix
 import logging
 
 logger = logging.getLogger(__name__)
@@ -235,7 +236,7 @@ def _pred_parser_legacy(pred_file, ontologies, gts, ns_dict, term_index, ids,
 
 
 def _pred_parser_vectorised(pred_file, ontologies, gts, ns_dict, term_index,
-                            ids, matrix, replaced):
+                            ids, pred_coo, replaced):
     """PyArrow-backed bulk parser for the common case (no ``max_terms`` cap).
 
     Strategy:
@@ -384,7 +385,7 @@ def _pred_parser_vectorised(pred_file, ontologies, gts, ns_dict, term_index,
 
         # Sort-based group-max over (row, col). Single int64 flat key, one
         # stable argsort, np.maximum.reduceat finishes the reduction.
-        n_terms = matrix[ns].shape[1]
+        n_terms = gts[ns].matrix.shape[1]
         flat = p_final * np.int64(n_terms) + t_final
         order = np.argsort(flat, kind="stable")
         flat_s = flat[order]
@@ -398,13 +399,13 @@ def _pred_parser_vectorised(pred_file, ontologies, gts, ns_dict, term_index,
         unique_rows = unique_flat // np.int64(n_terms)
         unique_cols = unique_flat % np.int64(n_terms)
 
-        # Scatter into the namespace matrix. The matrix starts at zero, so
-        # direct assignment is equivalent to the legacy
-        # "if prob > old: matrix[i, j] = prob" write rule.
-        matrix[ns][unique_rows, unique_cols] = max_v
+        # Store the per-namespace COO (group-maxed, unique coords). The caller
+        # builds a CSR / propagates from this without ever allocating a dense
+        # (n_prot x n_terms) matrix.
+        pred_coo[ns] = (unique_rows, unique_cols, max_v)
 
         # Register proteins that contributed at least one non-zero value.
-        prot_has_any = np.zeros(matrix[ns].shape[0], dtype=bool)
+        prot_has_any = np.zeros(gts[ns].matrix.shape[0], dtype=bool)
         prot_has_any[unique_rows[max_v > 0.0]] = True
         surviving_rows = np.flatnonzero(prot_has_any)
         if surviving_rows.size:
@@ -421,14 +422,13 @@ def pred_parser(pred_file, ontologies, gts, prop_mode, max_terms=None, n_cpu=0):
     This is the slow step if the input file is huge, ca. 1 minute for 5GB input on SSD disk.
     """
     ids = {}
-    matrix = {}
+    pred_coo = {}   # {ns: (rows, cols, vals)} — sparse; no dense (n_prot x n_terms) is built
+    matrix = {}     # dense scratch, allocated only for the legacy fallback path
     ns_dict = {}  # {namespace: term}
     replaced = {}
     row_nnz = {}
     term_index = {}
     for ns in gts:
-        matrix[ns] = np.zeros(gts[ns].matrix.shape, dtype='float')
-        row_nnz[ns] = np.zeros(gts[ns].matrix.shape[0], dtype=np.int32)
         ids[ns] = {}
         term_index[ns] = {t: info["index"] for t, info in ontologies[ns].terms_dict.items()}
         for term in ontologies[ns].terms_dict:
@@ -446,7 +446,7 @@ def pred_parser(pred_file, ontologies, gts, prop_mode, max_terms=None, n_cpu=0):
         try:
             _pred_parser_vectorised(
                 pred_file, ontologies, gts, ns_dict, term_index,
-                ids, matrix, replaced,
+                ids, pred_coo, replaced,
             )
             used_fast_path = True
         except Exception as exc:
@@ -455,16 +455,26 @@ def pred_parser(pred_file, ontologies, gts, prop_mode, max_terms=None, n_cpu=0):
                 extra={"file": pred_file, "error": repr(exc)},
             )
             # Reset any partial state the fast path may have written.
+            pred_coo.clear()
             for ns in gts:
-                matrix[ns].fill(0)
                 ids[ns].clear()
             replaced.clear()
 
     if not used_fast_path:
+        # The legacy loop writes per-cell into a dense matrix. Allocate it only
+        # on this fallback path, then capture its non-zeros as COO and free it,
+        # so the common (fast) path never materialises a dense (n_prot x n_terms).
+        for ns in gts:
+            matrix[ns] = np.zeros(gts[ns].matrix.shape, dtype='float')
+            row_nnz[ns] = np.zeros(gts[ns].matrix.shape[0], dtype=np.int32)
         _pred_parser_legacy(
             pred_file, ontologies, gts, ns_dict, term_index,
             ids, matrix, row_nnz, replaced, max_terms,
         )
+        for ns in gts:
+            r, c = np.nonzero(matrix[ns])
+            pred_coo[ns] = (r, c, matrix[ns][r, c])
+            matrix[ns] = None
 
     t1 = time.time()
     path_label = "vectorised" if used_fast_path else "legacy"
@@ -478,21 +488,37 @@ def pred_parser(pred_file, ontologies, gts, prop_mode, max_terms=None, n_cpu=0):
     predictions = {}
     tp0 = time.time()
     for ns in ids:
-        if ids[ns]:
-            logger.debug("pred matrix {} {} ".format(ns, matrix))
+        if ids[ns] and ns in pred_coo:
             t_ns = time.time()
-            propagate(matrix[ns], ontologies[ns], ontologies[ns].order, mode=prop_mode, parallel=n_cpu)
+            rows, cols, vals = pred_coo[ns]
+            shape = gts[ns].matrix.shape
+            if prop_mode == "max":
+                # Sparse-native propagation: COO in -> propagated COO out, no
+                # dense matrix. Bit-identical to dense propagate(mode='max').
+                prows, pcols, pvals = propagate_to_coo((rows, cols, vals),
+                                                       ontologies[ns], "max")
+            else:
+                # mode='fill' has zero-only-overwrite semantics that the COO
+                # path does not model; fall back to a dense propagate for this
+                # (non-default) namespace, then re-sparsify.
+                dense = np.zeros(shape, dtype='float')
+                dense[rows, cols] = vals
+                propagate(dense, ontologies[ns], ontologies[ns].order,
+                          mode=prop_mode, parallel=n_cpu)
+                prows, pcols = np.nonzero(dense)
+                pvals = dense[prows, pcols]
+                dense = None
+            pred_csr = csr_matrix((pvals, (prows, pcols)), shape=shape)
             _parser_logger.info(
                 f"pred_parser propagated {ns:>18s}: "
-                f"{len(ids[ns])} proteins, {int(np.count_nonzero(matrix[ns]))} annots "
+                f"{len(ids[ns])} proteins, {int(pred_csr.nnz)} annots "
                 f"({time.time() - t_ns:.2f}s)",
                 extra={"file": pred_file, "ns": ns,
                        "proteins": int(len(ids[ns])),
-                       "annotations": int(np.count_nonzero(matrix[ns])),
+                       "annotations": int(pred_csr.nnz),
                        "seconds": round(time.time() - t_ns, 3)},
             )
-            logger.debug("pred matrix {} {} ".format(ns, matrix))
-            predictions[ns] = Prediction(ids[ns], matrix[ns], ns)
+            predictions[ns] = Prediction(ids[ns], pred_csr, ns)
     _parser_logger.info(
         f"pred_parser total: read+propagate in {t1 - t0 + (time.time() - tp0):.2f}s",
         extra={"file": pred_file, "seconds": round(time.time() - tp0, 3)},

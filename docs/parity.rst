@@ -45,6 +45,16 @@ environment variable::
     CAFAEVAL_PARITY_PHASE=B pytest tests/diff/   # default
     CAFAEVAL_PARITY_PHASE=A pytest tests/diff/   # bit-exact gate
 
+Phase C (the memory work — sparse DAG and sparse prediction) introduces
+no new sum reordering, so it is verified **bit-exact** (``atol=0,
+rtol=0``) against the *pre-C fork* rather than upstream: the sparse DAG
+reproduces the dense ``dag.sum``/``np.nonzero`` results exactly, and the
+CSR prediction feeds the same Phase B kernels with the same non-zeros.
+It therefore keeps the existing Phase B oracle tolerance unchanged. The
+equivalence was additionally checked end-to-end on a 24 000-term ×
+30 000-protein synthetic corpus (identical output TSVs) across the
+sparse / dense / no-orphans / IA-weighted / NK / PK scenarios.
+
 Branches covered
 ----------------
 

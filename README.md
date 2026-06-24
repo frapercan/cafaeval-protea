@@ -43,7 +43,7 @@ python -c "from cafaeval.evaluation import cafa_eval"  # same import
 
 ## Attribution
 
-### Upstream authors (primary: always cite)
+### Upstream authors (primary, always cite)
 
 The original evaluator and all of its scoring logic are the work of:
 
@@ -97,10 +97,10 @@ This fork modifies the following parts of the upstream:
 
 | Area | Upstream module | Change | Status | Validation |
 |---|---|---|---|---|
-| Parser | `src/cafaeval/parser.py` | (A) incremental non-zero counter, buffered reads, single dict lookup per term; (B3) PyArrow-backed vectorised parser with dictionary-encoded `pid`/`tid` and sort-based per-namespace group-max | done | bit-exact on real corpora |
-| Propagation | `src/cafaeval/graph.py` | (A) cached per-term children lists, fill-mode restricted to zero rows, shared-memory spawn worker; (B4) sparse push-up kernel with flat ancestor CSR and `np.maximum.reduceat` group-max over input non-zeros | done | bit-exact in A, `rtol=1e-6` in B |
-| NK/LK metric | `src/cafaeval/evaluation.py` | (A) weighted-only fast path, fork-pool `initializer` for threshold sweep; (B1) sparse confusion-matrix kernel via `np.bincount` scatter + right-to-left cumsum | done | bit-exact |
-| PK metric | `src/cafaeval/evaluation.py` | (A) fork-pool `initializer` pattern extended to the `gt_exclude` branch; (B2) sparse PK kernel with boolean-mask filter `(pred != 0) & toi_mask & ~excluded_mask` | done | `rtol=1e-6` in B (ULP reorder) |
+| Parser | `src/cafaeval/parser.py` | (A) incremental non-zero counter, buffered reads, single dict lookup per term; (B3) PyArrow-backed vectorised parser with dictionary-encoded `pid`/`tid` and sort-based per-namespace group-max; (C3) prediction stored as `scipy.sparse` CSR built from the group-max COO, no dense `(n_prot, n_terms)` matrix | done | bit-exact on real corpora |
+| Propagation | `src/cafaeval/graph.py` | (A) cached per-term children lists, fill-mode restricted to zero rows, shared-memory spawn worker; (B4) sparse push-up kernel with flat ancestor CSR and `np.maximum.reduceat` group-max over input non-zeros; (C1) sparse CSR DAG adjacency (no dense `(n_terms, n_terms)` matrix) + `deque` topological sort; (C3) `propagate_to_coo` sparse-native push-up | done | bit-exact in A/C, `rtol=1e-6` in B |
+| NK/LK metric | `src/cafaeval/evaluation.py` | (A) weighted-only fast path, fork-pool `initializer` for threshold sweep; (B1) sparse confusion-matrix kernel via `np.bincount` scatter + right-to-left cumsum; (C3) reads the prediction CSR's non-zeros directly | done | bit-exact |
+| PK metric | `src/cafaeval/evaluation.py` | (A) fork-pool `initializer` pattern extended to the `gt_exclude` branch; (B2) sparse PK kernel with boolean-mask filter `(pred != 0) & toi_mask & ~excluded_mask`; (C3) reads the prediction CSR's non-zeros directly | done | `rtol=1e-6` in B (ULP reorder) |
 | Logging | (new) | Structured stdlib `logging` at module granularity, see *Logging* below | done | n/a |
 | Orchestrator | `src/cafaeval/__main__.py` | Thin reshuffling only; no semantic change | done | bit-exact |
 
@@ -112,9 +112,9 @@ Detailed per-commit diff against the upstream is maintained in
 No optimization lands in this fork without a passing parity test against a
 frozen upstream oracle. The oracle is built in `bench/` by running the
 **unmodified upstream** against a set of deterministic synthetic corpora
-(tiny / medium / large) and serializing the full output (Fmax, Smin,
-weighted Fmax, weighted Smin, precision-recall curves, optimal thresholds)
-into `bench/oracle/*.pkl`. The diff tests under `tests/diff/` reload
+(tiny / medium / large) and serializing the full output, Fmax, Smin,
+weighted Fmax, weighted Smin, precision-recall curves, optimal thresholds
+- into `bench/oracle/*.pkl`. The diff tests under `tests/diff/` reload
 that oracle and compare the fork's output:
 
 - **Phase A** (parser cherry-picks, cached children, weighted-only,
@@ -153,7 +153,7 @@ prediction file, `known_terms.tsv` exclude set for PK).
 | PK | 418.53 s | **10.33 s** | **40.5×** |
 
 The sparse confusion-matrix kernels (Phase B1/B2) are approximately flat
-in `n_tau`: moving from `th_step=0.05` (20 thresholds) to the CAFA
+in `n_tau` - moving from `th_step=0.05` (20 thresholds) to the CAFA
 default `th_step=0.01` (99 thresholds) costs the fork virtually nothing,
 while upstream's per-threshold scan scales linearly. Hence the speedup
 ratio grows with `n_tau`.
@@ -168,6 +168,25 @@ Where the fork's remaining time goes on PK end-to-end (10 s):
 | `compute_metrics` × 3 namespaces (sparse PK) | 1.8 s |
 | Eval/normalise/aggregate plumbing | 0.4 s |
 
+### Memory (Phase C)
+
+Phases A/B optimise time; Phase C removes the two dense allocations that
+dominate memory at full-GO scale, bit-exact (`atol=0, rtol=0`) and with
+no loss of speed. On a 24 000-term × 30 000-protein synthetic corpus
+(IA-weighted, PK):
+
+| Stage | Before | After |
+|---|---|---|
+| `Graph` build (full GO) | 312 MB / 1.87 s | **108 MB / 0.61 s** (sparse DAG) |
+| `cafa_eval` peak RSS | 11.9 GB | **7.0 GB (−41 %)** (CSR prediction) |
+| `cafa_eval` wall-clock | 51 s | **42 s** |
+
+The dense `(n_terms, n_terms)` DAG adjacency and the dense
+`(n_prot, n_terms)` prediction matrix are no longer materialised; both
+are sparse (CSR). Ground truth stays dense, so the TP gather is
+unchanged. See the [architecture](https://cafaeval-protea.readthedocs.io/en/latest/architecture.html)
+and [performance](https://cafaeval-protea.readthedocs.io/en/latest/performance.html) docs.
+
 ## Runtime knobs
 
 All optimizations are gated by environment variables so the legacy path
@@ -177,22 +196,23 @@ is always available for A/B comparison or debugging.
 |---|---|---|
 | `CAFAEVAL_SPARSE` | `1` | Sparse NK + PK confusion-matrix kernels and sparse push-up propagation. Set to `0` to fall back to the dense/pool path. |
 | `CAFAEVAL_FAST_PARSER` | `1` | PyArrow-backed vectorised `pred_parser`. Set to `0` to force the legacy per-line loop. Also falls back automatically when `max_terms` is set or the fast path raises. |
-| `CAFAEVAL_PARITY_PHASE` | `B` | Tolerance used by `tests/diff/test_oracle_parity.py`: `A` for bit-exact, `B` for `rtol=1e-6, atol=1e-9`. |
+| `CAFAEVAL_PARITY_PHASE` | `B` | Tolerance used by `tests/diff/test_oracle_parity.py` - `A` for bit-exact, `B` for `rtol=1e-6, atol=1e-9`. |
 
 ## Install
 
 ```bash
-pip install cafaeval-protea               # core install (numpy + pandas + matplotlib)
+pip install cafaeval-protea               # core install (numpy + scipy + pandas + matplotlib)
 pip install "cafaeval-protea[fast]"       # enables the PyArrow parser fast path
 ```
 
-The hard dependency set is kept at `numpy + pandas + matplotlib`;
+The hard dependency set is `numpy + scipy + pandas + matplotlib`
+(`scipy.sparse` backs the CSR prediction matrix, Phase C);
 `pyarrow>=12` is an optional `[fast]` extra. Without it, `pred_parser`
 automatically falls back to the legacy loop.
 
-Full documentation (installation, quickstart, per-phase performance
+Full documentation, installation, quickstart, per-phase performance
 breakdown, parity harness, architecture of the sparse kernels, and
-API reference) is hosted at
+API reference, is hosted at
 [**cafaeval-protea.readthedocs.io**](https://cafaeval-protea.readthedocs.io).
 
 ---
@@ -316,8 +336,8 @@ that fix bugs, improve performance, or add correctness tests are welcome.
 Changes that alter scoring semantics require parity evidence against the
 upstream oracle.
 
-**Branch strategy:** changes against the fork go to `main` (this fork does not
-use a `develop` branch). Keep the fork's `main` rebased on the upstream
+**Branch strategy:** `feature/* → develop → main`. Open feature PRs against
+`develop`; `main` is the released line. Keep the fork rebased on the upstream
 `claradepaolis/CAFA-evaluator-PK` periodically.
 
 ```bash
@@ -333,7 +353,7 @@ CAFAEVAL_PARITY_PHASE=B pytest tests/diff/ -q
 ruff check src
 mypy src
 
-# Open a pull request targeting main
+# Open a pull request targeting develop
 ```
 
 Key constraints:
