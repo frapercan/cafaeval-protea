@@ -43,7 +43,7 @@ python -c "from cafaeval.evaluation import cafa_eval"  # same import
 
 ## Attribution
 
-### Upstream authors (primary — always cite)
+### Upstream authors (primary: always cite)
 
 The original evaluator and all of its scoring logic are the work of:
 
@@ -101,7 +101,7 @@ This fork modifies the following parts of the upstream:
 | Propagation | `src/cafaeval/graph.py` | (A) cached per-term children lists, fill-mode restricted to zero rows, shared-memory spawn worker; (B4) sparse push-up kernel with flat ancestor CSR and `np.maximum.reduceat` group-max over input non-zeros | done | bit-exact in A, `rtol=1e-6` in B |
 | NK/LK metric | `src/cafaeval/evaluation.py` | (A) weighted-only fast path, fork-pool `initializer` for threshold sweep; (B1) sparse confusion-matrix kernel via `np.bincount` scatter + right-to-left cumsum | done | bit-exact |
 | PK metric | `src/cafaeval/evaluation.py` | (A) fork-pool `initializer` pattern extended to the `gt_exclude` branch; (B2) sparse PK kernel with boolean-mask filter `(pred != 0) & toi_mask & ~excluded_mask` | done | `rtol=1e-6` in B (ULP reorder) |
-| Logging | (new) | Structured stdlib `logging` at module granularity — see *Logging* below | done | n/a |
+| Logging | (new) | Structured stdlib `logging` at module granularity, see *Logging* below | done | n/a |
 | Orchestrator | `src/cafaeval/__main__.py` | Thin reshuffling only; no semantic change | done | bit-exact |
 
 Detailed per-commit diff against the upstream is maintained in
@@ -112,9 +112,9 @@ Detailed per-commit diff against the upstream is maintained in
 No optimization lands in this fork without a passing parity test against a
 frozen upstream oracle. The oracle is built in `bench/` by running the
 **unmodified upstream** against a set of deterministic synthetic corpora
-(tiny / medium / large) and serializing the full output — Fmax, Smin,
-weighted Fmax, weighted Smin, precision-recall curves, optimal thresholds
-— into `bench/oracle/*.pkl`. The diff tests under `tests/diff/` reload
+(tiny / medium / large) and serializing the full output (Fmax, Smin,
+weighted Fmax, weighted Smin, precision-recall curves, optimal thresholds)
+into `bench/oracle/*.pkl`. The diff tests under `tests/diff/` reload
 that oracle and compare the fork's output:
 
 - **Phase A** (parser cherry-picks, cached children, weighted-only,
@@ -147,13 +147,13 @@ at commit `16a6a6d`. Corpus: real CAFA 6 PROTEA artifacts
 (8 712 BP / 4 992 MF / 5 125 CC ground-truth proteins, ~700 k-row
 prediction file, `known_terms.tsv` exclude set for PK).
 
-| Mode | Upstream | Fork (B1–B7) | Speedup |
+| Mode | Upstream | Fork (B1-B7) | Speedup |
 |---|---|---|---|
 | NK | 92.96 s | **4.08 s** | **22.8×** |
 | PK | 418.53 s | **10.33 s** | **40.5×** |
 
 The sparse confusion-matrix kernels (Phase B1/B2) are approximately flat
-in `n_tau` — moving from `th_step=0.05` (20 thresholds) to the CAFA
+in `n_tau`: moving from `th_step=0.05` (20 thresholds) to the CAFA
 default `th_step=0.01` (99 thresholds) costs the fork virtually nothing,
 while upstream's per-threshold scan scales linearly. Hence the speedup
 ratio grows with `n_tau`.
@@ -177,7 +177,7 @@ is always available for A/B comparison or debugging.
 |---|---|---|
 | `CAFAEVAL_SPARSE` | `1` | Sparse NK + PK confusion-matrix kernels and sparse push-up propagation. Set to `0` to fall back to the dense/pool path. |
 | `CAFAEVAL_FAST_PARSER` | `1` | PyArrow-backed vectorised `pred_parser`. Set to `0` to force the legacy per-line loop. Also falls back automatically when `max_terms` is set or the fast path raises. |
-| `CAFAEVAL_PARITY_PHASE` | `B` | Tolerance used by `tests/diff/test_oracle_parity.py` — `A` for bit-exact, `B` for `rtol=1e-6, atol=1e-9`. |
+| `CAFAEVAL_PARITY_PHASE` | `B` | Tolerance used by `tests/diff/test_oracle_parity.py`: `A` for bit-exact, `B` for `rtol=1e-6, atol=1e-9`. |
 
 ## Install
 
@@ -190,9 +190,9 @@ The hard dependency set is kept at `numpy + pandas + matplotlib`;
 `pyarrow>=12` is an optional `[fast]` extra. Without it, `pred_parser`
 automatically falls back to the legacy loop.
 
-Full documentation — installation, quickstart, per-phase performance
+Full documentation (installation, quickstart, per-phase performance
 breakdown, parity harness, architecture of the sparse kernels, and
-API reference — is hosted at
+API reference) is hosted at
 [**cafaeval-protea.readthedocs.io**](https://cafaeval-protea.readthedocs.io).
 
 ---
