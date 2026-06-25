@@ -1,7 +1,7 @@
 import numpy as np
 import logging
 import os
-from collections import deque
+from collections import defaultdict, deque
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -275,6 +275,92 @@ def _ancestors_csr(ont):
     return indptr, indices
 
 
+def _propagate_sparse_fill(matrix, ont, triples=None):
+    """Sparse, in-place ``mode='fill'`` propagation, bit-identical to the dense
+    serial sweep (and to upstream cafaeval ``prop='fill'``).
+
+    ``fill`` is **not** a scatter-to-all-ancestors group-max. It is a stepwise
+    recurrence over the DAG (leaves -> roots):
+
+        v[t] = orig[t]                       if orig[t] != 0   (blocker)
+        v[t] = max over children c of v[c]   if orig[t] == 0
+
+    where ``v[c]`` is each child's *already-finalised* value. A non-zero
+    intermediate node "absorbs" deeper descendants: it keeps its own value and
+    that value (not the descendant's) is what flows up. The plain pushup, which
+    scatters every input non-zero directly into every ancestor, ignores those
+    intermediate blockers and overshoots (e.g. it would set a parent to a
+    deep leaf's score even though a lower-scored non-zero node sits between
+    them). See ``tests/test_propagation_fill_parity.py`` for the worked
+    counter-example and the sparse/dense/upstream parity gate.
+
+    We reproduce the recurrence sparsely by walking ``ont.order`` (the
+    topological leaves->roots order) and, for each term that has children,
+    taking the per-row max over its children's current values. Only terms that
+    actually have active descendants in a given row contribute work, so the
+    cost tracks the propagated non-zero count rather than ``n_prot * n_terms``.
+
+    If ``triples`` is ``(nz_rows, nz_cols, nz_scores)`` the caller already knows
+    the input non-zero positions and we skip the dense ``np.nonzero`` scan.
+    """
+    n_prot, n_terms = matrix.shape
+    if n_prot == 0 or n_terms == 0:
+        return
+
+    if triples is not None:
+        nz_rows, nz_cols, nz_scores = triples
+        nz_rows = np.asarray(nz_rows, dtype=np.int64)
+        nz_cols = np.asarray(nz_cols, dtype=np.int64)
+        nz_scores = np.asarray(nz_scores)
+    else:
+        nz_rows, nz_cols = np.nonzero(matrix)
+        if nz_rows.size == 0:
+            return
+        nz_scores = matrix[nz_rows, nz_cols]
+
+    if nz_rows.size == 0:
+        return
+
+    chi_indptr = ont._chi_indptr
+    chi_idx = ont._chi_idx
+
+    # ``current[t]`` holds the current (post-fill) ``{row: value}`` map for
+    # term ``t``; ``orig_rows[t]`` is the set of rows that were originally
+    # non-zero at ``t`` (blockers that must never be overwritten). Both are
+    # seeded from the input non-zeros and grown as we sweep upward.
+    current = defaultdict(dict)
+    orig_rows = defaultdict(set)
+    for r, c, s in zip(nz_rows.tolist(), nz_cols.tolist(), nz_scores.tolist()):
+        current[c][r] = s
+        orig_rows[c].add(r)
+
+    for t in ont.order:
+        c0 = chi_indptr[t]
+        c1 = chi_indptr[t + 1]
+        if c1 == c0:
+            continue
+        # Per-row max over this term's children's current values.
+        row_max = {}
+        for child in chi_idx[c0:c1]:
+            child_vals = current.get(int(child))
+            if not child_vals:
+                continue
+            for r, v in child_vals.items():
+                if v > row_max.get(r, -np.inf):
+                    row_max[r] = v
+        if not row_max:
+            continue
+        blocked = orig_rows.get(t, ())
+        cur_t = current[t]
+        for r, v in row_max.items():
+            if r in blocked:
+                # Originally non-zero -> keep the input value (it already feeds
+                # parents via ``cur_t``); descendants do not overwrite it.
+                continue
+            cur_t[r] = v
+            matrix[r, t] = v
+
+
 def _propagate_sparse_pushup(matrix, ont, mode, triples=None):
     """Sparse alternative to ``_propagate_serial``.
 
@@ -292,10 +378,15 @@ def _propagate_sparse_pushup(matrix, ont, mode, triples=None):
     large win for ground-truth matrices where the non-zero density is
     ~1e-4 and ``np.nonzero`` would otherwise touch every cell.
 
-    For ``mode='fill'`` the update semantics are "only overwrite cells that
-    were originally zero"; this is restored by snapshotting the input
-    non-zero positions and writing their original values back at the end.
+    ``mode='fill'`` is delegated to ``_propagate_sparse_fill`` because the
+    zero-only-overwrite semantics are a stepwise recurrence, not a
+    scatter-to-ancestors group-max; the pushup below handles ``mode='max'``
+    only.
     """
+    if mode == "fill":
+        _propagate_sparse_fill(matrix, ont, triples=triples)
+        return
+
     n_prot, n_terms = matrix.shape
     if n_prot == 0 or n_terms == 0:
         return
@@ -351,16 +442,11 @@ def _propagate_sparse_pushup(matrix, ont, mode, triples=None):
     out_rows = unique_flat // n_terms
     out_cols = unique_flat % n_terms
 
-    # Max against what is currently in the matrix. For mode='max' this is the
-    # final answer; for mode='fill' we restore original non-zeros below.
+    # Max against what is currently in the matrix; for mode='max' this is the
+    # final answer (mode='fill' is handled by _propagate_sparse_fill above).
     current = matrix[out_rows, out_cols]
     np.maximum(current, group_max, out=current)
     matrix[out_rows, out_cols] = current
-
-    if mode == "fill":
-        # Only zero cells may be filled by propagation; originally non-zero
-        # cells keep their input value regardless of what descendants say.
-        matrix[nz_rows, nz_cols] = nz_scores
 
 
 def propagate_to_coo(triples, ont, mode="max"):
