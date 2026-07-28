@@ -11,7 +11,16 @@
 
 **Install:** `pip install cafaeval-protea` (or `pip install "cafaeval-protea[fast]"` for the PyArrow parser).
 
-**Status:** production. Deployed in PROTEA and validated for CAFA 6 evaluation runs. Bit-exact parity with upstream for Phase A; `rtol=1e-6` tolerance for Phase B sparse PK kernel (ULP float reorder only).
+**Status:** in use. Deployed in the platform and validated for community
+evaluation runs. Bit-exact parity with upstream on the dense path; the sparse
+kernel matches within floating-point reordering tolerance.
+Every internal dependency in this stack now names a commit rather than a
+branch, checked on each pull request. Updating one is a pull request here that
+moves the commit, gated by this repository's own checks.
+
+A definitive campaign run is being prepared for the doctoral thesis, and
+earlier experimental results are being recomputed rather than carried forward.
+No headline number is quoted in this file as current.
 
 ---
 
@@ -43,7 +52,7 @@ python -c "from cafaeval.evaluation import cafa_eval"  # same import
 
 ## Attribution
 
-### Upstream authors (primary — always cite)
+### Upstream authors (primary, always cite)
 
 The original evaluator and all of its scoring logic are the work of:
 
@@ -97,11 +106,11 @@ This fork modifies the following parts of the upstream:
 
 | Area | Upstream module | Change | Status | Validation |
 |---|---|---|---|---|
-| Parser | `src/cafaeval/parser.py` | (A) incremental non-zero counter, buffered reads, single dict lookup per term; (B3) PyArrow-backed vectorised parser with dictionary-encoded `pid`/`tid` and sort-based per-namespace group-max; (C3) prediction stored as `scipy.sparse` CSR built from the group-max COO — no dense `(n_prot, n_terms)` matrix | done | bit-exact on real corpora |
+| Parser | `src/cafaeval/parser.py` | (A) incremental non-zero counter, buffered reads, single dict lookup per term; (B3) PyArrow-backed vectorised parser with dictionary-encoded `pid`/`tid` and sort-based per-namespace group-max; (C3) prediction stored as `scipy.sparse` CSR built from the group-max COO ,  no dense `(n_prot, n_terms)` matrix | done | bit-exact on real corpora |
 | Propagation | `src/cafaeval/graph.py` | (A) cached per-term children lists, fill-mode restricted to zero rows, shared-memory spawn worker; (B4) sparse push-up kernel with flat ancestor CSR and `np.maximum.reduceat` group-max over input non-zeros; (C1) sparse CSR DAG adjacency (no dense `(n_terms, n_terms)` matrix) + `deque` topological sort; (C3) `propagate_to_coo` sparse-native push-up | done | bit-exact in A/C, `rtol=1e-6` in B |
 | NK/LK metric | `src/cafaeval/evaluation.py` | (A) weighted-only fast path, fork-pool `initializer` for threshold sweep; (B1) sparse confusion-matrix kernel via `np.bincount` scatter + right-to-left cumsum; (C3) reads the prediction CSR's non-zeros directly | done | bit-exact |
 | PK metric | `src/cafaeval/evaluation.py` | (A) fork-pool `initializer` pattern extended to the `gt_exclude` branch; (B2) sparse PK kernel with boolean-mask filter `(pred != 0) & toi_mask & ~excluded_mask`; (C3) reads the prediction CSR's non-zeros directly | done | `rtol=1e-6` in B (ULP reorder) |
-| Logging | (new) | Structured stdlib `logging` at module granularity — see *Logging* below | done | n/a |
+| Logging | (new) | Structured stdlib `logging` at module granularity; see *Logging* below | done | n/a |
 | Orchestrator | `src/cafaeval/__main__.py` | Thin reshuffling only; no semantic change | done | bit-exact |
 
 Detailed per-commit diff against the upstream is maintained in
@@ -112,9 +121,9 @@ Detailed per-commit diff against the upstream is maintained in
 No optimization lands in this fork without a passing parity test against a
 frozen upstream oracle. The oracle is built in `bench/` by running the
 **unmodified upstream** against a set of deterministic synthetic corpora
-(tiny / medium / large) and serializing the full output — Fmax, Smin,
+(tiny / medium / large) and serializing the full output (Fmax, Smin,
 weighted Fmax, weighted Smin, precision-recall curves, optimal thresholds
-— into `bench/oracle/*.pkl`. The diff tests under `tests/diff/` reload
+) into `bench/oracle/*.pkl`. The diff tests under `tests/diff/` reload
 that oracle and compare the fork's output:
 
 - **Phase A** (parser cherry-picks, cached children, weighted-only,
@@ -153,7 +162,7 @@ prediction file, `known_terms.tsv` exclude set for PK).
 | PK | 418.53 s | **10.33 s** | **40.5×** |
 
 The sparse confusion-matrix kernels (Phase B1/B2) are approximately flat
-in `n_tau` — moving from `th_step=0.05` (20 thresholds) to the CAFA
+in `n_tau`: moving from `th_step=0.05` (20 thresholds) to the CAFA
 default `th_step=0.01` (99 thresholds) costs the fork virtually nothing,
 while upstream's per-threshold scan scales linearly. Hence the speedup
 ratio grows with `n_tau`.
@@ -196,7 +205,7 @@ is always available for A/B comparison or debugging.
 |---|---|---|
 | `CAFAEVAL_SPARSE` | `1` | Sparse NK + PK confusion-matrix kernels and sparse push-up propagation. Set to `0` to fall back to the dense/pool path. |
 | `CAFAEVAL_FAST_PARSER` | `1` | PyArrow-backed vectorised `pred_parser`. Set to `0` to force the legacy per-line loop. Also falls back automatically when `max_terms` is set or the fast path raises. |
-| `CAFAEVAL_PARITY_PHASE` | `B` | Tolerance used by `tests/diff/test_oracle_parity.py` — `A` for bit-exact, `B` for `rtol=1e-6, atol=1e-9`. |
+| `CAFAEVAL_PARITY_PHASE` | `B` | Tolerance used by `tests/diff/test_oracle_parity.py`. `A` for bit-exact, `B` for `rtol=1e-6, atol=1e-9`. |
 
 ## Install
 
@@ -210,9 +219,9 @@ The hard dependency set is `numpy + scipy + pandas + matplotlib`
 `pyarrow>=12` is an optional `[fast]` extra. Without it, `pred_parser`
 automatically falls back to the legacy loop.
 
-Full documentation — installation, quickstart, per-phase performance
+Full documentation, covering installation, quickstart, per-phase performance
 breakdown, parity harness, architecture of the sparse kernels, and
-API reference — is hosted at
+and the API reference, is hosted at
 [**cafaeval-protea.readthedocs.io**](https://cafaeval-protea.readthedocs.io).
 
 ---
