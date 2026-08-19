@@ -45,7 +45,8 @@ class PerProteinSink:
     def __init__(self):
         self.records = []
 
-    def record(self, *, tp_at_tau, pred_at_tau, n_gt, protein_rows=None):
+    def record(self, *, tp_at_tau, pred_at_tau, n_gt, protein_rows=None,
+               ns=None, variant=None):
         """Store one kernel's per-protein arrays.
 
         Copies are taken: the kernels reuse and mutate their buffers, and a sink
@@ -57,6 +58,13 @@ class PerProteinSink:
                 "pred_at_tau": np.asarray(pred_at_tau, dtype=np.float64).copy(),
                 "n_gt": np.asarray(n_gt).copy(),
                 "protein_rows": None if protein_rows is None else np.asarray(protein_rows).copy(),
+                # Which namespace and which of the two metric variants produced
+                # this record. Without them a caller holding several records
+                # cannot tell the weighted BPO arrays from the unweighted CCO
+                # ones, and the weighted variant is the one that carries the
+                # headline metric.
+                "ns": ns,
+                "variant": variant,
             }
         )
 
@@ -191,7 +199,8 @@ def compute_confusion_matrix_exclude(tau_arr, g_perprotein, pred_matrix, toi_per
     return metrics
 
 def compute_confusion_matrix_sparse(tau_arr, g, pred_matrix, toi, n_gt, ic_arr=None,
-                                    per_protein_sink=None):
+                                    per_protein_sink=None, sink_ns=None,
+                                    sink_variant=None):
     """Sparse alternative to :func:`compute_confusion_matrix`.
 
     Scatters each non-zero prediction into the highest tau bin at which it is
@@ -291,14 +300,15 @@ def compute_confusion_matrix_sparse(tau_arr, g, pred_matrix, toi, n_gt, ic_arr=N
     # Handed over BEFORE returning, and after the aggregate has been computed
     # from these same arrays, so a caller can check the two agree.
     if per_protein_sink is not None:
-        per_protein_sink.record(tp_at_tau=tp_at_tau, pred_at_tau=pred_at_tau, n_gt=n_gt)
+        per_protein_sink.record(tp_at_tau=tp_at_tau, pred_at_tau=pred_at_tau, n_gt=n_gt,
+                                ns=sink_ns, variant=sink_variant)
 
     return metrics
 
 
 def compute_confusion_matrix_exclude_sparse(
     tau_arr, pred_sub, gt_sub, toi_mask, excluded_mask, n_gt, ic_arr=None,
-    per_protein_sink=None,
+    per_protein_sink=None, sink_ns=None, sink_variant=None,
 ):
     """Sparse alternative to :func:`compute_confusion_matrix_exclude`.
 
@@ -417,7 +427,7 @@ def compute_confusion_matrix_exclude_sparse(
     if per_protein_sink is not None:
         per_protein_sink.record(
             tp_at_tau=tp_at_tau, pred_at_tau=pred_at_tau, n_gt=n_gt,
-            protein_rows=eligible_rows,
+            protein_rows=eligible_rows, ns=sink_ns, variant=sink_variant,
         )
 
     return metrics
@@ -467,7 +477,7 @@ def _cme_worker(tau_chunk):
     )
 
 def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None, n_cpu=0,
-                    per_protein_sink=None):
+                    per_protein_sink=None, sink_ns=None, sink_variant=None):
     """
     Takes the prediction and the ground truth and for each threshold in tau_arr
     calculates the confusion matrix and returns the coverage,
@@ -627,7 +637,8 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
         # Sparse kernel: single-pass scatter + cumsum. No pool needed — the
         # kernel is fast enough that fork overhead would dominate.
         metrics = compute_confusion_matrix_sparse(
-            tau_arr, g, p, toi, n_gt, ic_arr, per_protein_sink=per_protein_sink
+            tau_arr, g, p, toi, n_gt, ic_arr, per_protein_sink=per_protein_sink,
+            sink_ns=sink_ns, sink_variant=sink_variant,
         )
     elif gt_exclude is None:
         # Dense fallback kernel (opt-in, CAFAEVAL_SPARSE=0) needs a dense
@@ -648,7 +659,7 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
             pred_sub = pred[proteins_has_gt, :]
         metrics = compute_confusion_matrix_exclude_sparse(
             tau_arr, pred_sub, gt_with_annots, toi_mask, excluded_mask, n_gt, ic_arr,
-            per_protein_sink=per_protein_sink,
+            per_protein_sink=per_protein_sink, sink_ns=sink_ns, sink_variant=sink_variant,
         )
     else:
         # Dense fallback: fan out tau chunks over a fork pool using the
@@ -751,7 +762,8 @@ def _count_proteins_in_toi(gt_matrix, toi, exclude_matrix):
     return int(valid.any(axis=1).sum())
 
 
-def evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude=None, normalization='cafa', n_cpu=0, weighted_only=False):
+def evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude=None, normalization='cafa', n_cpu=0, weighted_only=False,
+                        per_protein_sink=None):
     t0 = time.time()
     _eval_logger.debug(
         "evaluate_prediction start",
@@ -782,7 +794,8 @@ def evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude=None, no
         if not weighted_only:
             t_metrics = time.time()
             metrics_df = compute_metrics(
-                prediction[ns].matrix, gt[ns].matrix, tau_arr, ontologies[ns].toi, exclude, None, n_cpu)
+                prediction[ns].matrix, gt[ns].matrix, tau_arr, ontologies[ns].toi, exclude, None, n_cpu,
+                per_protein_sink=per_protein_sink, sink_ns=ns, sink_variant="unweighted")
             t_norm = time.time()
             dfs.append(normalize(metrics_df, ns, tau_arr, ne, normalization))
             _eval_logger.info(
@@ -806,7 +819,8 @@ def evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude=None, no
 
             t_metrics_w = time.time()
             metrics_df_w = compute_metrics(
-                prediction[ns].matrix, gt[ns].matrix, tau_arr, ontologies[ns].toi_ia, exclude, ontologies[ns].ia, n_cpu)
+                prediction[ns].matrix, gt[ns].matrix, tau_arr, ontologies[ns].toi_ia, exclude, ontologies[ns].ia, n_cpu,
+                per_protein_sink=per_protein_sink, sink_ns=ns, sink_variant="weighted")
             t_norm_w = time.time()
             dfs_w.append(normalize(metrics_df_w, ns, tau_arr, ne, normalization))
             _eval_logger.info(
@@ -849,7 +863,8 @@ def evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude=None, no
 
 
 def cafa_eval(obo_file, pred_dir, gt_file, ia=None, no_orphans=False, norm='cafa', prop='max',
-              exclude=None, toi_file=None, max_terms=None, th_step=0.01, n_cpu=1, weighted_only=False):
+              exclude=None, toi_file=None, max_terms=None, th_step=0.01, n_cpu=1, weighted_only=False,
+              per_protein_sink=None):
     t_total = time.time()
     _eval_logger.info(
         f"cafa_eval start: norm={norm} prop={prop} th_step={th_step} "
@@ -927,7 +942,8 @@ def cafa_eval(obo_file, pred_dir, gt_file, ia=None, no_orphans=False, norm='cafa
         )
         t_eval = time.time()
         df_pred = evaluate_prediction(prediction, gt, ontologies, tau_arr, gt_exclude,
-                                      normalization=norm, n_cpu=n_cpu, weighted_only=weighted_only)
+                                      normalization=norm, n_cpu=n_cpu, weighted_only=weighted_only,
+                                      per_protein_sink=per_protein_sink)
         df_pred['filename'] = file_name.replace(pred_folder, '').replace('/', '_')
         dfs.append(df_pred)
         _eval_logger.info(
