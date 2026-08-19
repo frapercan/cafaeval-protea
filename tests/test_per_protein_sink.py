@@ -106,3 +106,45 @@ class TestTheSinkOwnsItsData:
         before = rec["tp_at_tau"].copy()
         compute_confusion_matrix_sparse(tau, gt, pred, toi, n_gt, per_protein_sink=sink)
         np.testing.assert_array_equal(rec["tp_at_tau"], before)
+
+
+class TestTheSinkIsReachableFromTheRealEntryPoint:
+    """The kernels are not what consumers call.
+
+    PROTEA calls ``cafa_eval``, which calls ``evaluate_prediction``, which calls
+    ``compute_metrics``, which calls a kernel. A sink wired only into the kernel
+    is a feature that exists and cannot be used, which is worse than one that
+    does not exist: it reads as done.
+    """
+
+    def test_evaluate_prediction_forwards_the_sink(self) -> None:
+        import inspect
+
+        from cafaeval.evaluation import cafa_eval, evaluate_prediction
+
+        assert "per_protein_sink" in inspect.signature(evaluate_prediction).parameters
+        assert "per_protein_sink" in inspect.signature(cafa_eval).parameters
+
+    def test_each_record_says_which_namespace_and_variant_it_is(self) -> None:
+        """A caller holding several records must be able to tell them apart.
+
+        The weighted variant is the one carrying the headline metric, so a
+        record that does not say which variant it is cannot be used for the
+        thing the sink exists for.
+        """
+        tau, gt, pred, toi, n_gt = _toy()
+        sink = PerProteinSink()
+        compute_confusion_matrix_sparse(
+            tau, gt, pred, toi, n_gt,
+            per_protein_sink=sink, sink_ns="biological_process", sink_variant="weighted",
+        )
+        rec = sink.records[0]
+        assert rec["ns"] == "biological_process"
+        assert rec["variant"] == "weighted"
+
+    def test_context_defaults_to_none_rather_than_to_a_guess(self) -> None:
+        tau, gt, pred, toi, n_gt = _toy()
+        sink = PerProteinSink()
+        compute_confusion_matrix_sparse(tau, gt, pred, toi, n_gt, per_protein_sink=sink)
+        assert sink.records[0]["ns"] is None
+        assert sink.records[0]["variant"] is None
