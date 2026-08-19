@@ -148,3 +148,59 @@ class TestTheSinkIsReachableFromTheRealEntryPoint:
         compute_confusion_matrix_sparse(tau, gt, pred, toi, n_gt, per_protein_sink=sink)
         assert sink.records[0]["ns"] is None
         assert sink.records[0]["variant"] is None
+
+
+class TestTheRowsCanBeNamed:
+    """Anonymous arrays are useless for the purpose the sink exists for.
+
+    Every axis the sink is meant to support, sequence length, identity to the
+    nearest donor, taxonomic relation, is keyed by protein. Arrays indexed by an
+    opaque row number cannot be joined to any of them, so the sink has to carry
+    enough to recover which protein each row is.
+
+    Two numberings are in play. The NK/LK kernel sees every row, so array row i
+    is matrix row i. The PK kernel can be handed a subset, and then the two
+    disagree; ``row_index`` is what reconciles them, and getting this wrong
+    would silently attribute one protein's score to another, which is the exact
+    failure this project spent a week correcting elsewhere.
+    """
+
+    def test_the_record_carries_the_id_map_and_the_row_index(self) -> None:
+        tau, gt, pred, toi, n_gt = _toy()
+        ids = {f"P{i:05d}": i for i in range(gt.shape[0])}
+        sink = PerProteinSink()
+        compute_confusion_matrix_sparse(
+            tau, gt, pred, toi, n_gt, per_protein_sink=sink,
+            sink_row_index=np.arange(gt.shape[0]), sink_ids=ids,
+        )
+        rec = sink.records[0]
+        assert rec["ids"] == ids
+        np.testing.assert_array_equal(rec["row_index"], np.arange(gt.shape[0]))
+
+    def test_row_index_has_one_entry_per_array_row(self) -> None:
+        """The property that makes the join sound rather than plausible."""
+        tau, gt, pred, toi, n_gt = _toy()
+        sink = PerProteinSink()
+        compute_confusion_matrix_sparse(
+            tau, gt, pred, toi, n_gt, per_protein_sink=sink,
+            sink_row_index=np.arange(gt.shape[0]),
+        )
+        rec = sink.records[0]
+        assert len(rec["row_index"]) == rec["tp_at_tau"].shape[0]
+
+    def test_the_id_map_is_copied_not_aliased(self) -> None:
+        tau, gt, pred, toi, n_gt = _toy()
+        ids = {"P1": 0}
+        sink = PerProteinSink()
+        compute_confusion_matrix_sparse(
+            tau, gt, pred, toi, n_gt, per_protein_sink=sink, sink_ids=ids,
+        )
+        ids["P2"] = 1
+        assert "P2" not in sink.records[0]["ids"]
+
+    def test_identity_is_absent_rather_than_guessed_when_not_supplied(self) -> None:
+        tau, gt, pred, toi, n_gt = _toy()
+        sink = PerProteinSink()
+        compute_confusion_matrix_sparse(tau, gt, pred, toi, n_gt, per_protein_sink=sink)
+        assert sink.records[0]["ids"] is None
+        assert sink.records[0]["row_index"] is None
