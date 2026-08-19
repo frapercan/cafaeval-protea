@@ -17,6 +17,50 @@ _eval_logger = logging.getLogger("cafaeval.eval")
 _eval_logger.addHandler(logging.NullHandler())
 
 # Return a mask for all the predictions (matrix) >= tau
+class PerProteinSink:
+    """Optional side channel for the per-protein vectors the kernels reduce away.
+
+    The confusion-matrix kernels build ``tp_at_tau`` and ``pred_at_tau`` with one
+    row per protein and then collapse them with ``.sum(axis=0)``. Everything
+    downstream sees only the collapsed number, so a caller wanting to report a
+    score stratified by a per-protein property (length, homology to the donor
+    bank, taxonomic distance) has nothing to stratify.
+
+    This is a sink rather than a return value on purpose. Changing the return
+    shape of the kernels would ripple through compute_metrics,
+    evaluate_prediction and cafa_eval, and every existing caller of each. An
+    optional keyword that defaults to None leaves all four signatures and all
+    four return types exactly as they were: when nobody passes a sink, nothing
+    in this module behaves differently.
+
+    The arrays handed over are the ones the aggregate was computed from, not a
+    recomputation, so a caller can verify that their column sums reproduce the
+    published totals. ``test_per_protein_sink`` does exactly that, because two
+    numbers describing the same quantity by different routes will drift unless
+    something checks.
+    """
+
+    __slots__ = ("records",)
+
+    def __init__(self):
+        self.records = []
+
+    def record(self, *, tp_at_tau, pred_at_tau, n_gt, protein_rows=None):
+        """Store one kernel's per-protein arrays.
+
+        Copies are taken: the kernels reuse and mutate their buffers, and a sink
+        holding a view would silently change under the caller.
+        """
+        self.records.append(
+            {
+                "tp_at_tau": np.asarray(tp_at_tau, dtype=np.float64).copy(),
+                "pred_at_tau": np.asarray(pred_at_tau, dtype=np.float64).copy(),
+                "n_gt": np.asarray(n_gt).copy(),
+                "protein_rows": None if protein_rows is None else np.asarray(protein_rows).copy(),
+            }
+        )
+
+
 def solidify_prediction(pred, tau):
     return pred >= tau
 
@@ -146,7 +190,8 @@ def compute_confusion_matrix_exclude(tau_arr, g_perprotein, pred_matrix, toi_per
 
     return metrics
 
-def compute_confusion_matrix_sparse(tau_arr, g, pred_matrix, toi, n_gt, ic_arr=None):
+def compute_confusion_matrix_sparse(tau_arr, g, pred_matrix, toi, n_gt, ic_arr=None,
+                                    per_protein_sink=None):
     """Sparse alternative to :func:`compute_confusion_matrix`.
 
     Scatters each non-zero prediction into the highest tau bin at which it is
@@ -243,11 +288,17 @@ def compute_confusion_matrix_sparse(tau_arr, g, pred_matrix, toi, n_gt, ic_arr=N
         recall = np.where(n_gt_col > 0, tp_at_tau / safe_gt, 0.0)
         metrics[:, 5] = recall.sum(axis=0)
 
+    # Handed over BEFORE returning, and after the aggregate has been computed
+    # from these same arrays, so a caller can check the two agree.
+    if per_protein_sink is not None:
+        per_protein_sink.record(tp_at_tau=tp_at_tau, pred_at_tau=pred_at_tau, n_gt=n_gt)
+
     return metrics
 
 
 def compute_confusion_matrix_exclude_sparse(
-    tau_arr, pred_sub, gt_sub, toi_mask, excluded_mask, n_gt, ic_arr=None
+    tau_arr, pred_sub, gt_sub, toi_mask, excluded_mask, n_gt, ic_arr=None,
+    per_protein_sink=None,
 ):
     """Sparse alternative to :func:`compute_confusion_matrix_exclude`.
 
@@ -360,6 +411,15 @@ def compute_confusion_matrix_exclude_sparse(
         recall = np.where(n_gt_col > 0, tp_at_tau / safe_gt, 0.0)
         metrics[:, 5] = recall.sum(axis=0)
 
+    # PK also hands over which rows were eligible: this kernel can be given a
+    # protein subset, so a caller stratifying by protein needs to know which
+    # rows the arrays refer to rather than assuming they are the whole set.
+    if per_protein_sink is not None:
+        per_protein_sink.record(
+            tp_at_tau=tp_at_tau, pred_at_tau=pred_at_tau, n_gt=n_gt,
+            protein_rows=eligible_rows,
+        )
+
     return metrics
 
 
@@ -406,7 +466,8 @@ def _cme_worker(tau_chunk):
         tau_chunk, _CME_G, _CME_P, _CME_TOI, _CME_N_GT, _CME_IC
     )
 
-def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None, n_cpu=0):
+def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None, n_cpu=0,
+                    per_protein_sink=None):
     """
     Takes the prediction and the ground truth and for each threshold in tau_arr
     calculates the confusion matrix and returns the coverage,
@@ -551,11 +612,23 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
         else:
             n_gt = (g * ic_arr[toi]).sum(axis=1)
 
+    # The dense fallback fans tau chunks over a fork pool, so the per-protein
+    # arrays live in worker processes and never come back. Refuse rather than
+    # return an empty sink: a caller that asked for stratification and silently
+    # got none would publish a stratified table with no data behind it.
+    if per_protein_sink is not None and not use_sparse:
+        raise NotImplementedError(
+            "per_protein_sink is only supported by the sparse kernels; unset "
+            "CAFAEVAL_SPARSE=0 to use it."
+        )
+
     t1 = time.time()
     if gt_exclude is None and use_sparse:
         # Sparse kernel: single-pass scatter + cumsum. No pool needed — the
         # kernel is fast enough that fork overhead would dominate.
-        metrics = compute_confusion_matrix_sparse(tau_arr, g, p, toi, n_gt, ic_arr)
+        metrics = compute_confusion_matrix_sparse(
+            tau_arr, g, p, toi, n_gt, ic_arr, per_protein_sink=per_protein_sink
+        )
     elif gt_exclude is None:
         # Dense fallback kernel (opt-in, CAFAEVAL_SPARSE=0) needs a dense
         # prediction; densify the CSR just for this path.
@@ -574,7 +647,8 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
         else:
             pred_sub = pred[proteins_has_gt, :]
         metrics = compute_confusion_matrix_exclude_sparse(
-            tau_arr, pred_sub, gt_with_annots, toi_mask, excluded_mask, n_gt, ic_arr
+            tau_arr, pred_sub, gt_with_annots, toi_mask, excluded_mask, n_gt, ic_arr,
+            per_protein_sink=per_protein_sink,
         )
     else:
         # Dense fallback: fan out tau chunks over a fork pool using the
