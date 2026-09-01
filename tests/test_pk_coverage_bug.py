@@ -83,8 +83,14 @@ def test_pk_coverage_never_exceeds_one():
 
 
 def test_pk_precision_recall_unchanged_by_fix():
-    """Sanity: the fix only touches the `n` column. TP/FP/FN and derived
-    P/R/F should be identical to pre-fix behaviour."""
+    """Sanity on the columns the eligibility restriction does NOT move.
+
+    `n` was restricted first, `fp` second (see
+    ``test_pk_ineligible_rows_do_not_inflate_fp``). TP, FN and the macro
+    P/R columns are untouched by either, because an ineligible protein
+    contributes exactly zero to each: nothing it predicts can be a TP,
+    its ``n_gt`` is zero, and its macro precision and recall are zero.
+    """
     pred_sub, gt_sub, toi_mask, excluded_mask, n_gt, tau_arr = _make_pk_scenario()
 
     metrics = compute_confusion_matrix_exclude_sparse(
@@ -97,3 +103,37 @@ def test_pk_precision_recall_unchanged_by_fix():
     # So TP at low tau: protein 0 term 2 (TP, weight 1) + protein 2 term 3 (TP, weight 1) = 2
     tp = metrics[0, 1]
     assert tp == 2.0, f"expected TP=2 at low tau, got {tp}"
+
+
+def test_pk_ineligible_rows_do_not_inflate_fp():
+    """A protein with no scoreable truth must not be charged as false positives.
+
+    Protein 1 has its whole TOI ground truth already known in t0, so
+    ``normalize()`` drops it from every denominator. It still predicts terms 2
+    and 3, neither of which is on its exclude list, and neither of which it has.
+    Every one of those predictions is a false positive BY CONSTRUCTION: there is
+    nothing it could have predicted that would have scored.
+
+    Before the masses were restricted, those predictions landed in ``fp`` while
+    the protein itself was absent from the population, so micro precision paid
+    for a protein it was not measuring. FP at the low threshold is 2 (the two
+    eligible proteins' non-TP predictions), not 4.
+    """
+    pred_sub, gt_sub, toi_mask, excluded_mask, n_gt, tau_arr = _make_pk_scenario()
+
+    metrics = compute_confusion_matrix_exclude_sparse(
+        tau_arr, pred_sub, gt_sub, toi_mask, excluded_mask, n_gt
+    )
+
+    assert metrics[0, 2] == 2.0, (
+        f"expected FP=2 at tau=0.1, got {metrics[0, 2]}. A value of 4 means the "
+        f"ineligible protein's two predictions are still being counted."
+    )
+
+    # And the columns that must NOT move, pinned so a future change to the
+    # restriction cannot quietly widen its reach.
+    assert metrics[0, 0] == 2.0, "n moved"
+    assert metrics[0, 1] == 2.0, "tp moved"
+    assert metrics[0, 3] == 5.0, "fn moved"
+    assert metrics[0, 4] == 1.0, "macro precision moved"
+    assert abs(metrics[0, 5] - 5.0 / 6.0) < 1e-9, f"macro recall moved: {metrics[0, 5]}"

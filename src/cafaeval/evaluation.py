@@ -407,16 +407,25 @@ def compute_confusion_matrix_exclude_sparse(
     pred_at_tau = np.cumsum(delta_pred_w[:, ::-1], axis=1)[:, ::-1]
     tp_at_tau = np.cumsum(delta_tp_w[:, ::-1], axis=1)[:, ::-1]
 
-    tp_totals = tp_at_tau.sum(axis=0)
-    pred_totals = pred_at_tau.sum(axis=0)
-
-    # For coverage (`n` column) to match the denominator used by normalize()
-    # — which is the post-exclusion protein count from _count_proteins_in_toi
-    # — restrict the row count to proteins that still have ≥1 GT annotation
-    # in TOI after the per-protein exclude mask. Without this, `n` counts
-    # proteins whose TOI annotations were all already known in t0, while the
-    # denominator drops them, producing coverage > 1 in PK.
+    # Restrict every aggregation to proteins that still have >= 1 GT annotation
+    # in TOI after the per-protein exclude mask. A protein whose TOI truth was
+    # entirely already known in t0 has no scoreable truth left, so normalize()
+    # drops it from every denominator (`n` for macro precision, `ne` elsewhere).
+    # Its predictions must therefore leave the numerators too.
+    #
+    # Coverage already did this. The masses did not, which put the predictions
+    # of those proteins into `fp` while the protein itself was not counted:
+    # every one of them is a false positive by construction, since nothing they
+    # can predict is scoreable. Micro precision was charged for them.
+    #
+    # `tp_totals` is a no-op under the current invariant, because a column can
+    # only be a TP when it is in TOI and not excluded, so an ineligible row
+    # contributes zero already. It is restricted anyway so the two totals share
+    # one population and the invariant is not load-bearing.
     eligible_rows = ((gt_sub != 0) & toi_mask[None, :] & (~excluded_mask)).any(axis=1)
+
+    tp_totals = tp_at_tau[eligible_rows].sum(axis=0)
+    pred_totals = pred_at_tau[eligible_rows].sum(axis=0)
 
     metrics[:, 0] = ((pred_at_tau > 0) & eligible_rows[:, None]).sum(axis=0)
     metrics[:, 1] = tp_totals
