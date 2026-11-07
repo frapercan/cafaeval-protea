@@ -659,11 +659,18 @@ def compute_metrics(pred, gt_matrix, tau_arr, toi, gt_exclude=None, ic_arr=None,
     if gt_exclude is None and use_sparse:
         # Sparse kernel: single-pass scatter + cumsum. No pool needed — the
         # kernel is fast enough that fork overhead would dominate.
-        # NK/LK path passes every row through, so array row i is matrix row i.
+        # The NK/LK path drops the proteins with no truth in the terms of
+        # interest before the kernel, as the PK path does, so array row i is
+        # matrix row ``flatnonzero(proteins_has_gt)[i]``, not row i. Until
+        # 2026-11-07 this passed ``arange``, which names every row after the
+        # first dropped protein with its neighbour's id; PROTEA refused those
+        # tables as unmappable_row_numbering, one namespace per stratum.
         metrics = compute_confusion_matrix_sparse(
             tau_arr, g, p, toi, n_gt, ic_arr, per_protein_sink=per_protein_sink,
             sink_ns=sink_ns, sink_variant=sink_variant,
-            sink_row_index=(np.arange(p.shape[0]) if per_protein_sink is not None else None),
+            sink_row_index=(
+                np.flatnonzero(proteins_has_gt) if per_protein_sink is not None else None
+            ),
             sink_ids=sink_ids,
         )
     elif gt_exclude is None:
