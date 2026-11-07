@@ -158,11 +158,13 @@ class TestTheRowsCanBeNamed:
     opaque row number cannot be joined to any of them, so the sink has to carry
     enough to recover which protein each row is.
 
-    Two numberings are in play. The NK/LK kernel sees every row, so array row i
-    is matrix row i. The PK kernel can be handed a subset, and then the two
-    disagree; ``row_index`` is what reconciles them, and getting this wrong
-    would silently attribute one protein's score to another, which is the exact
-    failure this project spent a week correcting elsewhere.
+    Two numberings are in play. Both the NK/LK and the PK paths drop the
+    proteins with no truth in the terms of interest before the kernel, so the
+    array rows can be a subset of the matrix rows; ``row_index`` is what
+    reconciles them, and getting this wrong would silently attribute one
+    protein's score to another, which is the exact failure this project spent
+    a week correcting elsewhere. Until 2026-11-07 this docstring said the NK/LK
+    kernel sees every row, and the code believed it.
     """
 
     def test_the_record_carries_the_id_map_and_the_row_index(self) -> None:
@@ -204,3 +206,36 @@ class TestTheRowsCanBeNamed:
         compute_confusion_matrix_sparse(tau, gt, pred, toi, n_gt, per_protein_sink=sink)
         assert sink.records[0]["ids"] is None
         assert sink.records[0]["row_index"] is None
+
+
+class TestTheNkLkPathNamesTheRowsItKeeps:
+    """``compute_metrics`` drops proteins with no truth before the NK/LK kernel.
+
+    Its per-protein rows must then be named by the matrix rows they came from.
+    Naming them ``0..n-1`` gives every row after the first dropped protein the
+    id of a neighbour. PROTEA refused those tables (unmappable_row_numbering)
+    for one namespace in each of its NK and LK strata.
+    """
+
+    @staticmethod
+    def _run_with_two_proteins_without_truth():
+        from cafaeval.evaluation import compute_metrics
+
+        tau, gt, pred, toi, _ = _toy()
+        gt = gt.copy()
+        gt[[0, 2, 4], 0] = 1.0  # these three keep truth
+        gt[[1, 3], :] = 0.0  # these two have none, so the path drops them
+        sink = PerProteinSink()
+        compute_metrics(pred, gt, tau, toi, n_cpu=1, per_protein_sink=sink,
+                        sink_ids={f"P{i}": i for i in range(gt.shape[0])})
+        return gt, sink.records[0]
+
+    def test_row_index_names_the_matrix_rows_that_were_kept(self) -> None:
+        gt, rec = self._run_with_two_proteins_without_truth()
+        np.testing.assert_array_equal(rec["row_index"], [0, 2, 4])
+        assert len(rec["row_index"]) == rec["tp_at_tau"].shape[0]
+
+    def test_each_named_row_carries_its_own_proteins_truth(self) -> None:
+        gt, rec = self._run_with_two_proteins_without_truth()
+        for i, row in enumerate(rec["row_index"]):
+            assert rec["n_gt"][i] == gt[row].sum()
